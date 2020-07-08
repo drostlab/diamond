@@ -1,6 +1,10 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2018 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
+                        Benjamin Buchfink
+                        Eberhard Karls Universitaet Tuebingen
+						
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -38,7 +42,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "../util/parallel/thread_pool.h"
 #include "../util/system/system.h"
 
-using namespace std;
+using std::unique_ptr;
 
 namespace Workflow { namespace Search {
 
@@ -119,7 +123,12 @@ void run_query_chunk(DatabaseFile &db_file,
 	const Metadata &metadata,
 	const Options &options)
 {
-	const Parameters params(db_file.ref_header.sequences, db_file.ref_header.letters);
+	const Parameters params {
+		db_file.ref_header.sequences,
+		db_file.ref_header.letters,
+		config.gapped_filter_evalue1,
+		config.gapped_filter_evalue
+	};
 
 	task_timer timer("Building query seed set");
 	if (query_chunk == 0)
@@ -252,7 +261,7 @@ void master_thread(DatabaseFile *db_file, task_timer &total_timer, Metadata &met
 		else
 			if (!load_seqs(*query_file, *format_n, &query_seqs::data_, query_ids::data_, &query_source_seqs::data_,
 				config.store_query_quality ? &query_qual : nullptr,
-				(size_t)(config.chunk_size * 1e9), config.qfilt))
+				(size_t)(config.chunk_size * 1e9), config.qfilt, input_value_traits))
 				break;
 
 		timer.finish();

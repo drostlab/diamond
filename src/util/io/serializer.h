@@ -19,12 +19,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef SERIALIZER_H_
 #define SERIALIZER_H_
 
+#include <iostream>
 #include <string>
 #include <set>
 #include <vector>
 #include "../algo/varint.h"
 #include "stream_entity.h"
 #include "consumer.h"
+#include "../system/endianness.h"
 
 using std::string;
 using std::vector;
@@ -47,19 +49,19 @@ struct Serializer : public Consumer
 		if (varint_)
 			write_varint(x, *this);
 		else
-			write(x);
+			write(big_endian_byteswap(x));
 		return *this;
 	}
 
 	Serializer& operator<<(unsigned long x)
 	{
-		write(x);
+		write(big_endian_byteswap(x));
 		return *this;
 	}
 
 	Serializer& operator<<(unsigned long long x)
 	{
-		write(x);
+		write(big_endian_byteswap(x));
 		return *this;
 	}
 
@@ -87,7 +89,8 @@ struct Serializer : public Consumer
 
 	Serializer& operator<<(const vector<string> &v)
 	{
-		*this << (int)v.size();
+		varint_ = false;
+		*this << (uint32_t)v.size();
 		for (vector<string>::const_iterator i = v.begin(); i < v.end(); ++i)
 			*this << *i;
 		return *this;

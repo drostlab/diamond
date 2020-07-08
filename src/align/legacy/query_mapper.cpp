@@ -20,7 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <algorithm>
 #include "query_mapper.h"
 #include "../../data/reference.h"
-#include "../extend_ungapped.h"
+#include "../../dp/ungapped.h"
 #include "../../output/output.h"
 #include "../../output/output_format.h"
 #include "../../output/daa_write.h"
@@ -52,7 +52,7 @@ bool Target::is_enveloped(PtrVector<Target>::const_iterator begin, PtrVector<Tar
 	return false;
 }
 
-void Target::add_ranges(vector<unsigned> &v) {
+void Target::add_ranges(vector<int32_t> &v) {
 	for (const Hsp &hsp : hsps) {
 		const int i0 = hsp.query_source_range.begin_ / INTERVAL,
 			i1 = min(hsp.query_source_range.end_ / INTERVAL, int(v.size() - 1));
@@ -61,12 +61,12 @@ void Target::add_ranges(vector<unsigned> &v) {
 	}
 }
 
-bool Target::is_outranked(const vector<unsigned> &v, double treshold) {
+bool Target::is_outranked(const vector<int32_t> &v, double treshold) {
 	for (const Hsp &hsp : hsps) {
 		const int i0 = hsp.query_source_range.begin_ / INTERVAL,
 			i1 = min(hsp.query_source_range.end_ / INTERVAL, int(v.size() - 1));
 		for (int i = i0; i <= i1; ++i)
-			if (hsp.score >= unsigned(v[i] * treshold))
+			if (hsp.score >= v[i] * treshold)
 				return false;
 	}
 	return true;
@@ -77,7 +77,7 @@ int QueryMapper::raw_score_cutoff() const
 	return score_matrix.rawscore(config.min_bit_score == 0 ? score_matrix.bitscore(config.max_evalue, (unsigned)query_seq(0).length()) : config.min_bit_score);
 }
 
-QueryMapper::QueryMapper(const Parameters &params, size_t query_id, Trace_pt_list::iterator begin, Trace_pt_list::iterator end, const Metadata &metadata, bool target_parallel) :
+QueryMapper::QueryMapper(const Parameters &params, size_t query_id, hit* begin, hit* end, const Metadata &metadata, bool target_parallel) :
 	parameters(params),
 	source_hits(std::make_pair(begin, end)),
 	query_id((unsigned)query_id),
@@ -106,13 +106,13 @@ void QueryMapper::init()
 
 unsigned QueryMapper::count_targets()
 {
-	std::sort(source_hits.first, source_hits.second, hit::cmp_subject);
+	std::sort(source_hits.first, source_hits.second, hit::CmpSubject());
 	const size_t n = source_hits.second - source_hits.first;
-	const Trace_pt_list::iterator hits = source_hits.first;
+	const hit* hits = source_hits.first;
 	size_t subject_id = std::numeric_limits<size_t>::max();
 	unsigned n_subject = 0;
 	for (size_t i = 0; i < n; ++i) {
-		std::pair<size_t, size_t> l = ref_seqs::data_->local_position(hits[i].subject_);
+		std::pair<size_t, size_t> l = ref_seqs::data_->local_position((uint64_t)hits[i].subject_);
 		const unsigned frame = hits[i].query_ % align_mode.query_contexts;
 		/*const Diagonal_segment d = config.comp_based_stats ? xdrop_ungapped(query_seq(frame), query_cb[frame], ref_seqs::get()[l.first], hits[i].seed_offset_, (int)l.second)
 			: xdrop_ungapped(query_seq(frame), ref_seqs::get()[l.first], hits[i].seed_offset_, (int)l.second);*/

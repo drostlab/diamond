@@ -1,6 +1,10 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2017 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
+                        Benjamin Buchfink
+                        Eberhard Karls Universitaet Tuebingen
+						
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,9 +20,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
-#ifndef VALUE_H_
-#define VALUE_H_
-
+#pragma once
 #include <stdexcept>
 #include <string>
 #include "const.h"
@@ -51,17 +53,18 @@ struct Char_representation
 		return data_[(long)c];
 	}
 private:
-	static const char invalid;
+	static const Letter invalid;
 	Letter data_[256];
 };
 
 struct Value_traits
 {
-	Value_traits(const char *alphabet, Letter mask_char, const char *ignore);
+	Value_traits(const char *alphabet, Letter mask_char, const char *ignore, Sequence_type seq_type);
 	const char *alphabet;
 	unsigned alphabet_size;
 	Letter mask_char;
 	Char_representation from_char;
+	Sequence_type seq_type;
 };
 
 #define AMINO_ACID_ALPHABET "ARNDCQEGHILKMFPSTWYVBJZX*_"
@@ -77,7 +80,13 @@ static inline Letter letter_mask(Letter x) {
 
 #ifdef __SSE2__
 static inline __m128i letter_mask(__m128i x) {
-	return _mm_and_si128(x, _mm_set1_epi8(LETTER_MASK));
+	return _mm_and_si128(x, SIMD::_mm_set1_epi8(LETTER_MASK));
+}
+#endif
+
+#ifdef __AVX2__
+static inline __m256i letter_mask(__m256i x) {
+	return _mm256_and_si256(x, ::SIMD::_mm256_set1_epi8(LETTER_MASK));
 }
 #endif
 
@@ -110,5 +119,3 @@ struct Align_mode
 
 extern Align_mode align_mode;
 extern const double background_freq[20];
-
-#endif

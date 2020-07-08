@@ -128,8 +128,8 @@ struct Target
 		for (list<Hsp_traits>::iterator i = ts.begin(); i != ts.end(); ++i)
 			i->query_source_range = TranslatedPosition::absolute_interval(TranslatedPosition(i->query_range.begin_, Frame(i->frame)), TranslatedPosition(i->query_range.end_, Frame(i->frame)), (int)query_len);
 	}
-	void add_ranges(vector<unsigned> &v);
-	bool is_outranked(const vector<unsigned> &v, double treshold);
+	void add_ranges(vector<int32_t> &v);
+	bool is_outranked(const vector<int32_t> &v, double treshold);
 	bool envelopes(const Hsp_traits &t, double p) const;
 	bool is_enveloped(const Target &t, double p) const;
 	bool is_enveloped(PtrVector<Target>::const_iterator begin, PtrVector<Target>::const_iterator end, double p, int min_score) const;
@@ -151,7 +151,7 @@ struct Target
 
 struct QueryMapper
 {
-	QueryMapper(const Parameters &params, size_t query_id, Trace_pt_list::iterator begin, Trace_pt_list::iterator end, const Metadata &metadata, bool target_parallel = false);
+	QueryMapper(const Parameters &params, size_t query_id, hit* begin, hit* end, const Metadata &metadata, bool target_parallel = false);
 	void init();
 	bool generate_output(TextBuffer &buffer, Statistics &stat);
 	void rank_targets(double ratio, double factor);
@@ -178,7 +178,7 @@ struct QueryMapper
 	virtual ~QueryMapper() {}
 
 	const Parameters &parameters;
-	pair<Trace_pt_list::iterator, Trace_pt_list::iterator> source_hits;
+	pair<hit*, hit*> source_hits;
 	unsigned query_id, targets_finished, next_target;
 	unsigned source_query_len, unaligned_from;
 	PtrVector<Target> targets;
@@ -190,7 +190,7 @@ struct QueryMapper
 
 private:
 
-	static pair<Trace_pt_list::iterator, Trace_pt_list::iterator> get_query_data();
+	static pair<hit*, hit*> get_query_data();
 	unsigned count_targets();
 	sequence query_source_seq() const
 	{

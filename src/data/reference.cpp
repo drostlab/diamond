@@ -1,6 +1,10 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2018 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
+                        Benjamin Buchfink
+                        Eberhard Karls Universitaet Tuebingen
+						
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -64,6 +68,19 @@ Deserializer& operator>>(Deserializer &d, ReferenceHeader2 &h)
 	return d;
 }
 
+InputFile& operator>>(InputFile& file, ReferenceHeader& h)
+{
+	file.varint = false;
+	file >> h.magic_number >> h.build >> h.db_version >> h.sequences >> h.letters >> h.pos_array_offset;
+	return file;
+}
+
+Serializer& operator<<(Serializer& file, const ReferenceHeader& h)
+{
+	file.unset(Serializer::VARINT);
+	file << h.magic_number << h.build << h.db_version << h.sequences << h.letters << h.pos_array_offset;
+	return file;
+}
 
 struct Pos_record
 {
@@ -75,7 +92,19 @@ struct Pos_record
 	{}
 	uint64_t pos;
 	uint32_t seq_len;
+	enum { SIZE = 16 };
 };
+
+InputFile& operator>>(InputFile& file, Pos_record& r) {
+	uint32_t p;
+	file >> r.pos >> r.seq_len >> p;
+	return file;
+}
+
+Serializer& operator<<(Serializer& file, const Pos_record& r) {
+	file << r.pos << r.seq_len << (uint32_t)0;
+	return file;
+}
 
 void DatabaseFile::init()
 {
@@ -113,8 +142,7 @@ void DatabaseFile::close() {
 
 void DatabaseFile::read_header(InputFile &stream, ReferenceHeader &header)
 {
-	if (stream.read(&header, 1) != 1)
-		throw Database_format_exception();
+	stream >> header;
 	if (header.magic_number != ReferenceHeader().magic_number)
 		throw Database_format_exception();
 }
@@ -169,7 +197,7 @@ void make_db(TempFile **tmp_out, TextInputFile *input_file)
 	ReferenceHeader header;
 	ReferenceHeader2 header2;
 
-	out->write(&header, 1);
+	*out << header;
 	*out << header2;
 
 	size_t letters = 0, n = 0, n_seqs = 0;
@@ -182,7 +210,7 @@ void make_db(TempFile **tmp_out, TextInputFile *input_file)
 	FileBackedBuffer accessions;
 
 	try {
-		while ((timer.go("Loading sequences"), n = load_seqs(*db_file, format, &seqs, ids, 0, nullptr, (size_t)(1e9), string())) > 0) {
+		while ((timer.go("Loading sequences"), n = load_seqs(*db_file, format, &seqs, ids, 0, nullptr, (size_t)(1e9), string(), amino_acid_traits)) > 0) {
 			if (config.masking == 1) {
 				timer.go("Masking sequences");
 				mask_seqs(*seqs, Masking::get(), false);
@@ -220,7 +248,8 @@ void make_db(TempFile **tmp_out, TextInputFile *input_file)
 	timer.go("Writing trailer");
 	header.pos_array_offset = offset;
 	pos_array.emplace_back(offset, 0);
-	out->write_raw(pos_array);
+	for (const Pos_record& r : pos_array)
+		*out << r;
 	timer.finish();
 
 	taxonomy.init();
@@ -248,7 +277,7 @@ void make_db(TempFile **tmp_out, TextInputFile *input_file)
 	header.letters = letters;
 	header.sequences = n_seqs;
 	out->seek(0);
-	out->write(&header, 1);
+	*out << header;
 	*out << header2;
 	if (tmp_out) {
 		*tmp_out = static_cast<TempFile*>(out);
@@ -288,13 +317,13 @@ bool DatabaseFile::load_seqs(vector<unsigned> &block_to_database_id, size_t max_
 	if(load_ids) *dst_id = new String_set<char, 0>;
 
 	Pos_record r;
-	read(&r, 1);
+	(*this) >> r;
 	uint64_t start_offset = r.pos;
 	bool last = false;
 
 	while (r.seq_len > 0 && letters < max_letters) {
 		Pos_record r_next;
-		read(&r_next, 1);
+		(*this) >> r_next;
 		if (!filter || (*filter)[database_id]) {
 			letters += r.seq_len;
 			(*dst_seq)->reserve(r.seq_len);
@@ -308,7 +337,7 @@ bool DatabaseFile::load_seqs(vector<unsigned> &block_to_database_id, size_t max_
 		}
 		else
 			last = false;
-		pos_array_offset += sizeof(Pos_record);
+		pos_array_offset += Pos_record::SIZE;
 		++database_id;
 		++seqs_processed;
 		r = r_next;
@@ -423,8 +452,12 @@ bool DatabaseFile::is_diamond_db(const string &file_name) {
 	if (file_name == "-")
 		return false;
 	InputFile db_file(file_name);
-	uint64_t magic_number;
-	bool r = db_file.read(&magic_number, 1) == 1 && magic_number == ReferenceHeader::MAGIC_NUMBER;
+	uint64_t magic_number = 0;
+	try {
+		db_file >> magic_number;
+	}
+	catch (EndOfStream) {}
+	bool r = (magic_number == ReferenceHeader::MAGIC_NUMBER);
 	db_file.close();
 	return r;
 }

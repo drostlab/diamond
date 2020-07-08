@@ -5,8 +5,6 @@
 #include "../string/string.h"
 #include "../log_stream.h"
 
-using namespace std;
-
 #ifdef _MSC_VER
 #include <windows.h>
 #else
@@ -14,15 +12,19 @@ using namespace std;
 #include <sys/stat.h>
 #endif
 
+using std::string;
+using std::cout;
+using std::endl;
+
 string executable_path() {
 	char buf[4096];
 #ifdef _MSC_VER
 	if (GetModuleFileNameA(NULL, buf, sizeof(buf)) == 0)
-		throw runtime_error("Error executing GetModuleFileNameA.");
+		throw std::runtime_error("Error executing GetModuleFileNameA.");
 	return string(buf);
 #else
 	if (readlink("/proc/self/exe", buf, sizeof(buf)) < 0)
-		throw runtime_error("Error executing readlink on /proc/self/exe.");
+		throw std::runtime_error("Error executing readlink on /proc/self/exe.");
 	return string(buf);
 #endif
 }
@@ -33,6 +35,31 @@ bool exists(const std::string &file_name) {
 #else
 	struct stat buffer;
 	return stat(file_name.c_str(), &buffer) == 0;
+#endif
+}
+
+size_t file_size(const char* name)
+{
+#ifdef WIN32
+	HANDLE hFile = CreateFile(name, GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return -1; // error condition, could call GetLastError to find out more
+
+	LARGE_INTEGER size;
+	if (!GetFileSizeEx(hFile, &size))
+	{
+		CloseHandle(hFile);
+		return -1; // error condition, could call GetLastError to find out more
+	}
+
+	CloseHandle(hFile);
+	return size.QuadPart;
+#else
+	struct stat stat_buf;
+	int rc = stat(name, &stat_buf);
+	return rc == 0 ? stat_buf.st_size : -1;
 #endif
 }
 

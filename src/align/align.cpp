@@ -28,14 +28,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "legacy/query_mapper.h"
 #include "../util/merge_sort.h"
 #include "extend.h"
+#include "../util/algo/radix_sort.h"
 
-using namespace std;
+using std::get;
+using std::tuple;
+using std::unique_ptr;
 
 DpStat dp_stat;
 
 struct Align_fetcher
 {
-	static void init(size_t qbegin, size_t qend, vector<hit>::iterator begin, vector<hit>::iterator end)
+	static void init(size_t qbegin, size_t qend, hit* begin, hit* end)
 	{
 		it_ = begin;
 		end_ = end;
@@ -62,16 +65,16 @@ struct Align_fetcher
 			queue_->release();
 	}
 	size_t query;
-	vector<hit>::iterator begin, end;
+	hit* begin, *end;
 	bool target_parallel;
 private:	
-	static vector<hit>::iterator it_, end_;
+	static hit* it_, *end_;
 	static unique_ptr<Queue> queue_;
 };
 
 unique_ptr<Queue> Align_fetcher::queue_;
-vector<hit>::iterator Align_fetcher::it_;
-vector<hit>::iterator Align_fetcher::end_;
+hit* Align_fetcher::it_;
+hit* Align_fetcher::end_;
 
 TextBuffer* legacy_pipeline(Align_fetcher &hits, const sequence *subjects, size_t subject_count, const Metadata *metadata, const Parameters *params, Statistics &stat) {
 	if ((hits.end == hits.begin) && subjects == nullptr) {
@@ -135,7 +138,7 @@ void align_worker(size_t thread_id, const Parameters *params, const Metadata *me
 
 void align_queries(Trace_pt_buffer &trace_pts, Consumer* output_file, const Parameters &params, const Metadata &metadata)
 {
-	const size_t max_size = (size_t)std::min(config.chunk_size*1e9 * 9 * 2 / config.lowmem, 10e9);
+	const size_t max_size = std::min(size_t(config.chunk_size*1e9 * 9 * 2) / config.lowmem, config.trace_pt_fetch_size);
 	pair<size_t, size_t> query_range;
 	vector<sequence> subjects;
 	if (config.swipe_all) {
@@ -144,21 +147,29 @@ void align_queries(Trace_pt_buffer &trace_pts, Consumer* output_file, const Para
 			subjects.push_back(ref_seqs::get()[i]);
 	}
 
+	trace_pts.load(max_size);
+
 	while (true) {
 		task_timer timer("Loading trace points", 3);
-		Trace_pt_list *v = new Trace_pt_list;
-		statistics.max(Statistics::TEMP_SPACE, trace_pts.load(*v, max_size, query_range));
-		if (query_range.second - query_range.first == 0) {
-			delete v;
+		tuple<vector<hit>*, size_t, size_t> input = trace_pts.retrieve();
+		if (get<0>(input) == nullptr)
 			break;
-		}
+		statistics.inc(Statistics::TIME_LOAD_SEED_HITS, timer.microseconds());
+		vector<hit>* hit_buf = get<0>(input);
+		query_range = { get<1>(input), get<2>(input) };
+		trace_pts.load(max_size);
+
 		timer.go("Sorting trace points");
-		merge_sort(v->begin(), v->end(), config.threads_);
-		v->init();
+		if (config.beta)
+			radix_sort<hit, hit::Query>(hit_buf->data(), hit_buf->data() + hit_buf->size(), (uint32_t)query_range.second, config.threads_);
+		else
+			merge_sort(hit_buf->begin(), hit_buf->end(), config.threads_);
+		statistics.inc(Statistics::TIME_SORT_SEED_HITS, timer.microseconds());
+
 		timer.go("Computing alignments");
-		Align_fetcher::init(query_range.first, query_range.second, v->begin(), v->end());
+		Align_fetcher::init(query_range.first, query_range.second, hit_buf->data(), hit_buf->data() + hit_buf->size());
 		OutputSink::instance = unique_ptr<OutputSink>(new OutputSink(query_range.first, output_file));
-		vector<thread> threads;
+		vector<std::thread> threads;
 		if (config.verbosity >= 3 && config.load_balancing == Config::query_parallel && !config.no_heartbeat)
 			threads.emplace_back(heartbeat_worker, query_range.second);
 		size_t n_threads = config.load_balancing == Config::query_parallel ? (config.threads_align == 0 ? config.threads_ : config.threads_align) : 1;
@@ -166,17 +177,9 @@ void align_queries(Trace_pt_buffer &trace_pts, Consumer* output_file, const Para
 			threads.emplace_back(align_worker, i, &params, &metadata, subjects.empty() ? nullptr : subjects.data(), subjects.size());
 		for (auto &t : threads)
 			t.join();
-		timer.finish();
-
-		double t = timer.get();
-		log_stream << "Gross cells = " << dp_stat.gross_cells << endl;
-		log_stream << "Gross GCUPS = " << (double)dp_stat.gross_cells / 1e9 / t << endl;
-		log_stream << "Gross GCUPS/thread = " << (double)dp_stat.gross_cells / n_threads / 1e9 / t << endl;
-		log_stream << "Net cells = " << dp_stat.net_cells << endl;
-		log_stream << "Net GCUPS = " << (double)dp_stat.net_cells / 1e9 / t << endl;
-		log_stream << "Net GCUPS/thread = " << (double)dp_stat.net_cells / n_threads / 1e9 / t << endl;
-
+		statistics.inc(Statistics::TIME_EXT, timer.microseconds());
+		
 		timer.go("Deallocating buffers");
-		delete v;
+		delete hit_buf;
 	}
 }

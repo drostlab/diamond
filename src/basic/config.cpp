@@ -1,6 +1,10 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2019 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
+                        Benjamin Buchfink
+                        Eberhard Karls Universitaet Tuebingen
+						
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -17,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
 #include <memory>
+#include <exception>
 #include "../util/command_line_parser.h"
 #include "config.h"
 #include "../util/util.h"
@@ -28,6 +33,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "shape_config.h"
 #include "../util/io/temp_file.h"
 #include "../basic/match.h"
+#include "../cluster/cluster_registry.h"
 #include "../basic/translate.h"
 #include "../dp/dp.h"
 #include "masking.h"
@@ -37,6 +43,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using namespace std;
 
 Config config;
+
+void Config::set_sens(Sensitivity sens) {
+	if (sensitivity != Sensitivity::FAST)
+		throw std::runtime_error("Sensitivity switches are mutually exclusive.");
+	sensitivity = sens;
+}
 
 Config::Config(int argc, const char **argv, bool check_io)
 {
@@ -142,7 +154,18 @@ Config::Config(int argc, const char **argv, bool check_io)
 
 	Options_group makedb("Makedb options");
 	makedb.add()
-		("in", 0, "input reference file in FASTA format", input_ref_file);
+		("in", 0, "input reference file in FASTA format", input_ref_file)
+		("taxonmap", 0, "protein accession to taxid mapping file", prot_accession2taxid)
+		("taxonnodes", 0, "taxonomy nodes.dmp from NCBI", nodesdmp)
+		("taxonnames", 0, "taxonomy names.dmp from NCBI", namesdmp);
+
+	Options_group cluster("");
+	cluster.add()
+		("cluster-algo", 0, "Clustering algorithm (\"multi-step\", \"mcl\")", cluster_algo)
+		("cluster-similarity", 0, "Clustering similarity measure", cluster_similarity)
+		("mcl-expansion", 0, "MCL expansion coefficient (default=2)", cluster_mcl_expansion, (uint32_t) 2)
+		("mcl-inflation", 0, "MCL inflation coefficient (default=2.0)", cluster_mcl_inflation, 2.0)
+		("mcl-sparsity-switch", 0, "MCL switch to sparse matrix computation (default=0.8) ", cluster_mcl_sparsity_switch, 0.8);
 
 	Options_group aligner("Aligner options");
 	aligner.add()
@@ -153,8 +176,9 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("unfmt", 0, "format of unaligned query file (fasta/fastq)", unfmt, string("fasta"))
 		("alfmt", 0, "format of aligned query file (fasta/fastq)", alfmt, string("fasta"))
 		("unal", 0, "report unaligned queries (0=no, 1=yes)", report_unaligned, -1)
-		("max-target-seqs", 'k', "maximum number of target sequences to report alignments for", max_alignments, uint64_t(25))
+		("max-target-seqs", 'k', "maximum number of target sequences to report alignments for (default=25)", max_alignments, uint64_t(25))
 		("top", 0, "report alignments within this percentage range of top alignment score (overrides --max-target-seqs)", toppercent, 100.0)
+		("max-hsps", 0, "maximum number of HSPs per subject sequence to report for each query (default=unlimited)", max_hsps, 0u)
 		("range-culling", 0, "restrict hit culling to overlapping query ranges", query_range_culling)
 		("compress", 0, "compression for output files (0=none, 1=gzip)", compression)
 		("evalue", 'e', "maximum e-value to report alignments (default=0.001)", max_evalue, 0.001)
@@ -165,7 +189,7 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("sensitive", 0, "enable sensitive mode (default: fast)", mode_sensitive)
 		("more-sensitive", 0, "enable more sensitive mode (default: fast)", mode_more_sensitive)
 		("block-size", 'b', "sequence block size in billions of letters (default=2.0)", chunk_size)
-		("index-chunks", 'c', "number of chunks for index processing", lowmem)
+		("index-chunks", 'c', "number of chunks for index processing (default=4)", lowmem)
 		("tmpdir", 't', "directory for temporary files", tmpdir)
 		("gapopen", 0, "gap open penalty", gap_open, -1)
 		("gapextend", 0, "gap extension penalty", gap_extend, -1)
@@ -177,14 +201,10 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("K", 0, "K parameter for custom matrix", K)
 		("comp-based-stats", 0, "enable composition based statistics (0/1=default)", comp_based_stats, 1u)
 		("masking", 0, "enable masking of low complexity regions (0/1=default)", masking, 1)
-		//("seg", 0, "enable SEG masking of queries (yes/no)", seg)
 		("query-gencode", 0, "genetic code to use to translate query (see user manual)", query_gencode, 1u)
 		("salltitles", 0, "include full subject titles in DAA file", salltitles)
 		("sallseqid", 0, "include all subject ids in DAA file", sallseqid)
 		("no-self-hits", 0, "suppress reporting of identical self hits", no_self_hits)
-		("taxonmap", 0, "protein accession to taxid mapping file", prot_accession2taxid)
-		("taxonnodes", 0, "taxonomy nodes.dmp from NCBI", nodesdmp)
-		("taxonnames", 0, "taxonomy names.dmp from NCBI", namesdmp)
 		("taxonlist", 0, "restrict search to list of taxon ids (comma-separated)", taxonlist)
 		("taxon-exclude", 0, "exclude list of taxon ids (comma-separated)", taxon_exclude);
 
@@ -195,26 +215,20 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("min-orf", 'l', "ignore translated sequences without an open reading frame of at least this length", run_len)
 		("freq-sd", 0, "number of standard deviations for ignoring frequent seeds", freq_sd, 0.0)
 		("id2", 0, "minimum number of identities for stage 1 hit", min_identities)
-		("window", 'w', "window size for local hit search", window)
 		("xdrop", 'x', "xdrop for ungapped alignment", ungapped_xdrop, 12.3)
-		("ungapped-score", 0, "minimum alignment score to continue local extension", min_ungapped_score)
-		("hit-band", 0, "band for hit verification", hit_band)
-		("hit-score", 0, "minimum score to keep a tentative alignment", min_hit_score)
-		("gapped-xdrop", 'X', "xdrop for gapped alignment in bits", gapped_xdrop, 20)
 		("band", 0, "band for dynamic programming computation", padding)
 		("shapes", 's', "number of seed shapes (0 = all available)", shapes)
 		("shape-mask", 0, "seed shapes", shape_mask)
-		("rank-ratio", 0, "include subjects within this ratio of last hit (stage 1)", rank_ratio, -1.0)
-		("rank-ratio2", 0, "include subjects within this ratio of last hit (stage 2)", rank_ratio2, -1.0)
-		("max-hsps", 0, "maximum number of HSPs per subject sequence to save for each query", max_hsps, 0u)
-		("culling-overlap", 0, "minimum range overlap with higher scoring hit to delete a hit (0.5)", inner_culling_overlap, 50.0)
+		("rank-ratio", 0, "include subjects within this ratio of last hit", rank_ratio, -1.0)
+		("culling-overlap", 0, "minimum range overlap with higher scoring hit to delete a hit (default=50%)", inner_culling_overlap, 50.0)
 		("taxon-k", 0, "maximum number of targets to report per species", taxon_k, (uint64_t)0)
-		("range-cover", 0, "percentage of query range to be covered for hit culling (default=50)", query_range_cover, 50.0)
+		("range-cover", 0, "percentage of query range to be covered for range culling (default=50%)", query_range_cover, 50.0)
 		("dbsize", 0, "effective database size (in letters)", db_size)
 		("no-auto-append", 0, "disable auto appending of DAA and DMND file extensions", no_auto_append)
 		("xml-blord-format", 0, "Use gnl|BL_ORD_ID| style format in XML output", xml_blord_format)
 		("stop-match-score", 0, "Set the match score of stop codons against each other.", stop_match_score, 1)
-		("tantan-minMaskProb", 0, "minimum repeat probability for masking (0.9)", tantan_minMaskProb, 0.9);
+		("tantan-minMaskProb", 0, "minimum repeat probability for masking (default=0.9)", tantan_minMaskProb, 0.9)
+		("file-buffer-size", 0, "file buffer size in bytes (default=67108864)", file_buffer_size, (size_t)67108864);
 
 	Options_group view_options("View options");
 	view_options.add()
@@ -224,6 +238,17 @@ Config::Config(int argc, const char **argv, bool check_io)
 	Options_group getseq_options("Getseq options");
 	getseq_options.add()
 		("seq", 0, "Sequence numbers to display.", seq_no);
+
+	double rank_ratio2;
+	unsigned window;
+	Options_group deprecated_options("");
+	deprecated_options.add()
+		("window", 'w', "window size for local hit search", window)
+		("ungapped-score", 0, "minimum alignment score to continue local extension", min_ungapped_score)
+		("hit-band", 0, "band for hit verification", hit_band)
+		("hit-score", 0, "minimum score to keep a tentative alignment", min_hit_score)
+		("gapped-xdrop", 'X', "xdrop for gapped alignment in bits", gapped_xdrop, 20)
+		("rank-ratio2", 0, "include subjects within this ratio of last hit (stage 2)", rank_ratio2, -1.0);
 
 	Options_group hidden_options("");
 	hidden_options.add()
@@ -311,18 +336,33 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("cutoff-score-8bit", 0, "", cutoff_score_8bit, 240)
 		("min-band-overlap", 0, "", min_band_overlap, 0.2)
 		("min-realign-overhang", 0, "", min_realign_overhang, 30)
-		("fast-stage2", 0, "", fast_stage2)
+		("beta", 0, "", beta)
 		("ungapped-window", 0, "", ungapped_window, 48)
 		("gapped-filter-diag-score", 0, "", gapped_filter_diag_score, 20)
-		("gapped-filter-score", 0, "", gapped_filter_score, 0.0)
 		("gapped-filter-evalue", 0, "", gapped_filter_evalue, 0.0)
 		("gapped-filter-window", 0, "", gapped_filter_window, 200)
 		("output-hits", 0, "", output_hits)
-		("ungapped-evalue", 0, "", ungapped_evalue, 100000.0)
+		("ungapped-evalue", 0, "", ungapped_evalue)
 		("no-logfile", 0, "", no_logfile)
-		("no-heartbeat", 0, "", no_heartbeat);
+		("no-heartbeat", 0, "", no_heartbeat)
+		("band-bin", 0, "", band_bin, 24)
+		("col-bin", 0, "", col_bin, 400)
+		("self", 0, "", self)
+		("trace-pt-fetch-size", 0, "", trace_pt_fetch_size, (size_t)10e9)
+		("tile-size", 0, "", tile_size, (uint32_t)1024)
+		("short-query-ungapped-bitscore", 0, "", short_query_ungapped_bitscore, 25.0)
+		("short-query-max-len", 0, "", short_query_max_len, 60)
+		("gapped-filter-evalue1", 0, "", gapped_filter_evalue1, 1.0e+04)
+		("ext-chunk-size", 0, "", ext_chunk_size, (size_t)0)
+		("ext-yield", 0, "", ext_min_yield)
+		("ext", 0, "", ext)
+		("full-sw-len", 0, "", full_sw_len)
+		("relaxed-evalue-factor", 0, "", relaxed_evalue_factor, 1.0)
+		("type", 0, "", type)
+		("raw", 0, "", raw)
+		("ultra-sensitive", 0, "", mode_ultra_sensitive);
 	
-	parser.add(general).add(makedb).add(aligner).add(advanced).add(view_options).add(getseq_options).add(hidden_options);
+	parser.add(general).add(makedb).add(cluster).add(aligner).add(advanced).add(view_options).add(getseq_options).add(hidden_options).add(deprecated_options);
 	parser.store(argc, argv, command);
 
 	if (long_reads) {
@@ -465,6 +505,15 @@ Config::Config(int argc, const char **argv, bool check_io)
 				throw std::runtime_error("Custom scoring matrices require setting the --gapopen and --gapextend options.");
 			score_matrix = Score_matrix(matrix_file, lambda, K, gap_open, gap_extend);
 		}
+		if(command == Config::cluster && !Workflow::Cluster::ClusterRegistry::has(cluster_algo)){
+			ostream &header_out = command == Config::help ? cout : cerr;
+			header_out << "Unkown clustering algorithm: " << cluster_algo << endl;
+			header_out << "Available options are: " << endl;
+			for(string c_algo : Workflow::Cluster::ClusterRegistry::getKeys()){
+				header_out << "\t" << c_algo << "\t"<< Workflow::Cluster::ClusterRegistry::get(c_algo)->get_description() << endl;
+			}
+			throw std::runtime_error("Clustering algorithm not found.");
+		}
 		message_stream << "Scoring parameters: " << score_matrix << endl;
 		if (masking == 1)
 			Masking::instance = unique_ptr<Masking>(new Masking(score_matrix));
@@ -479,6 +528,12 @@ Config::Config(int argc, const char **argv, bool check_io)
 		raw_ungapped_xdrop = score_matrix.rawscore(ungapped_xdrop);
 		verbose_stream << "CPU features detected: " << SIMD::features() << endl;
 	}
+
+	sensitivity = Sensitivity::FAST;
+	if (mode_sensitive) set_sens(Sensitivity::SENSITIVE);
+	if (mode_more_sensitive) set_sens(Sensitivity::MORE_SENSITIVE);
+	if (mode_very_sensitive) set_sens(Sensitivity::VERY_SENSITIVE);
+	if (mode_ultra_sensitive) set_sens(Sensitivity::ULTRA_SENSITIVE);
 
 	Translator::init(query_gencode);
 
@@ -507,9 +562,6 @@ Config::Config(int argc, const char **argv, bool check_io)
 
 	if (query_range_culling && taxon_k != 0)
 		throw std::runtime_error("--taxon-k is not supported for --range-culling mode.");
-
-	if (fast_stage2 && (lowmem != 1))
-		throw std::runtime_error("--fast-stage2 needs -c1.");
 
 	log_stream << "MAX_SHAPE_LEN=" << MAX_SHAPE_LEN;
 #ifdef SEQ_MASK

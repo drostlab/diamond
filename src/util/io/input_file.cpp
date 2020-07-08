@@ -42,7 +42,7 @@ bool is_gzip_stream(const unsigned char *b)
 }
 
 InputFile::InputFile(const string &file_name, int flags) :
-	Deserializer(new InputStreamBuffer(new FileSource(file_name))),
+	Deserializer(new InputStreamBuffer(new FileSource(file_name), flags)),
 	file_name(file_name),
 	unlinked(false)
 {
@@ -62,16 +62,17 @@ InputFile::InputFile(const string &file_name, int flags) :
 	FileSource *source = dynamic_cast<FileSource*>(buffer_->root());
 	char b[2];
 	size_t n = source->read(b, 2);
-	if (n == 2)
+	/*if (n == 2)
 		source->putback(b[1]);
 	if (n >= 1)
-		source->putback(b[0]);
+		source->putback(b[0]);*/
+	buffer_->putback(b, n);
 	if (n == 2 && is_gzip_stream((const unsigned char*)b))
 		buffer_ = new InputStreamBuffer(new ZlibSource(buffer_));
 }
 
 InputFile::InputFile(TempFile &tmp_file, int flags) :
-	Deserializer(new InputStreamBuffer(new FileSource(tmp_file.file_name(), tmp_file.file()))),
+	Deserializer(new InputStreamBuffer(new FileSource(tmp_file.file_name(), tmp_file.file()), flags)),
 	file_name(tmp_file.file_name()),
 	unlinked(tmp_file.unlinked)
 {
@@ -93,5 +94,7 @@ uint64_t InputFile::hash() {
 	std::fill(h, h + 16, '\0');
 	while ((n = read_raw(buf, SIZE)) > 0)
 		MurmurHash3_x64_128(buf, n, h, h);
-	return *(uint64_t*)h;
+	uint64_t r;
+	memcpy(&r, h, 8);
+	return r;
 }

@@ -9,7 +9,20 @@ option(X86 "X86" ON)
 option(STRICT_BAND "STRICT_BAND" ON)
 option(LEFTMOST_SEED_FILTER "LEFTMOST_SEED_FILTER" ON)
 option(SEQ_MASK "SEQ_MASK" ON)
-set(MAX_SHAPE_LEN 17)
+option(DP_STAT "DP_STAT" OFF)
+set(MAX_SHAPE_LEN 19)
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm.*|ARM.*)")
+  set(X86 OFF)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64.*|AARCH64.*)")
+  set(X86 OFF)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "PPC64*|ppc64*|powerpc64*")
+  set(X86 OFF)
+  # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maltivec")
+  add_definitions(-DEIGEN_DONT_VECTORIZE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^s390")
+  set(X86 OFF)
+endif()
 
 if(STATIC_LIBSTDC++)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++")
@@ -27,6 +40,10 @@ if(LEFTMOST_SEED_FILTER)
   add_definitions(-DLEFTMOST_SEED_FILTER)
 endif()
 
+if(DP_STAT)
+  add_definitions(-DDP_STAT)
+endif()
+
 add_definitions(-DMAX_SHAPE_LEN=${MAX_SHAPE_LEN})
 
 IF(STATIC_LIBGCC)
@@ -40,11 +57,6 @@ if(BUILD_STATIC)
 endif()
 
 set(CMAKE_CXX_STANDARD 11)
-
-if (${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
-else()
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
-endif()
 
 if(CMAKE_BUILD_MARCH)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=${CMAKE_BUILD_MARCH}")
@@ -60,11 +72,16 @@ endif()
 if (${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS -D_ITERATOR_DEBUG_LEVEL=0)
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-uninitialized -Wno-ignored-attributes -Wno-unused-variable")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11 -Wall -Wextra -Wno-implicit-fallthrough -Wreturn-type -Wno-unused -Wno-unused-parameter -Wno-unused-variable -Wno-uninitialized -Wno-deprecated-copy -Wno-unknown-warning-option")
+  # -fsanitize=address -fno-omit-frame-pointer 
+endif()
+
+if (CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fabi-version=7")
+  message("Setting -fabi-version for GCC 4.x")
 endif()
 
 include_directories(
-  "${CMAKE_SOURCE_DIR}/src"
   "${ZLIB_INCLUDE_DIR}"
   "${CMAKE_SOURCE_DIR}/src/lib")
 
@@ -79,16 +96,20 @@ set(DISPATCH_OBJECTS
 "src/dp/swipe/swipe_wrapper.cpp"
 "src/util/tantan.cpp"
 "src/dp/scan_diags.cpp"
+"src/dp/ungapped_simd.cpp"
 )
 
 add_library(arch_generic OBJECT ${DISPATCH_OBJECTS})
-target_compile_options(arch_generic PUBLIC -DDISPATCH_ARCH=ARCH_GENERIC)
+target_compile_options(arch_generic PUBLIC -DDISPATCH_ARCH=ARCH_GENERIC -DARCH_ID=0 -DEigen=Eigen_GENERIC)
 if(X86)
 add_library(arch_sse4_1 OBJECT ${DISPATCH_OBJECTS})
+add_library(arch_avx2 OBJECT ${DISPATCH_OBJECTS})
 if (${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
-	target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__)
+	target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -DARCH_ID=1 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__ -DEigen=Eigen_SSE4_1)
+    target_compile_options(arch_avx2 PUBLIC -DDISPATCH_ARCH=ARCH_AVX2 -DARCH_ID=2 /arch:AVX2 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__ -DEigen=Eigen_AVX2)
 else()
-	target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -mssse3 -mpopcnt -msse4.1)
+	target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -DARCH_ID=1 -mssse3 -mpopcnt -msse4.1 -DEigen=Eigen_SSE4_1)
+    target_compile_options(arch_avx2 PUBLIC -DDISPATCH_ARCH=ARCH_AVX2 -DARCH_ID=2 -mssse3 -mpopcnt -msse4.1 -msse4.2 -mavx -mavx2 -DEigen=Eigen_AVX2)
 endif()
 endif(X86)
 
@@ -109,11 +130,12 @@ set(OBJECTS
   src/run/tools.cpp
   src/chaining/greedy_align.cpp
   src/output/output_format.cpp
+  src/output/clustering_variables.cpp
+  src/output/clustering_format.cpp
   src/output/join_blocks.cpp
   src/data/frequent_seeds.cpp
   src/align/legacy/query_mapper.cpp
   src/output/blast_tab_format.cpp
-  src/dp/padded_banded_sw.cpp
   src/dp/needleman_wunsch.cpp
   src/output/blast_pairwise_format.cpp
   src/dp/comp_based_stats.cpp
@@ -151,7 +173,6 @@ set(OBJECTS
   src/data/seed_array.cpp
   src/output/paf_format.cpp
   src/util/system/system.cpp
-  src/run/cluster.cpp
   src/util/algo/greedy_vortex_cover.cpp
   src/util/sequence/sequence.cpp
   src/tools/tsv_record.cpp
@@ -172,6 +193,9 @@ set(OBJECTS
   src/align/gapped.cpp
   src/align/culling.cpp
   src/cluster/medoid.cpp
+  src/cluster/cluster_registry.cpp
+  src/cluster/multi_step_cluster.cpp
+  src/cluster/mcl.cpp
   src/align/output.cpp
   src/tools/roc.cpp
   src/test/data.cpp
@@ -182,30 +206,19 @@ set(OBJECTS
   src/tools/merge_tsv.cpp
   src/output/xml_format.cpp
   src/align/gapped_filter.cpp
+  src/tools/benchmark_io.cpp
 )
 
 if(X86)
-add_executable(diamond $<TARGET_OBJECTS:arch_generic>
-  $<TARGET_OBJECTS:arch_sse4_1>
-  ${OBJECTS}
-)
+  add_executable(diamond $<TARGET_OBJECTS:arch_avx2>
+    $<TARGET_OBJECTS:arch_sse4_1>
+    $<TARGET_OBJECTS:arch_generic>
+    ${OBJECTS}
+  )
 else()
 add_executable(diamond $<TARGET_OBJECTS:arch_generic>
   ${OBJECTS}
 )
-endif()
-
-if(EXTRA)
-  target_sources(diamond
-    PUBLIC
-      src/extra/benchmark.cpp
-	  src/extra/test.cpp
-	  src/dp/sw_3frame.cpp
-	  src/extra/roc.cpp
-	  src/extra/model_sim.cpp
-	  src/extra/opt.cpp
-  )
-  add_definitions(-DEXTRA)
 endif()
 
 target_link_libraries(diamond ${ZLIB_LIBRARY} ${CMAKE_THREAD_LIBS_INIT})

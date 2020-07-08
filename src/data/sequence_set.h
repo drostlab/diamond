@@ -70,7 +70,7 @@ struct Sequence_set : public String_set<Letter, sequence::DELIMITER, 1>
 		return max;
 	}
 
-	sequence window_infix(size_t offset, unsigned &left) const
+	/*sequence window_infix(size_t offset, unsigned &left) const
 	{
 		const Letter* begin(this->data(offset));
 		unsigned n(0);
@@ -100,7 +100,7 @@ struct Sequence_set : public String_set<Letter, sequence::DELIMITER, 1>
 		++begin;
 		const Letter* s(this->data(offset - config.window));
 		return sequence(s, 2 * config.window, (int)(begin - s));
-	}
+	}*/
 
 	vector<size_t> partition(unsigned n_part) const
 	{
@@ -228,7 +228,7 @@ private:
 	static void enum_seeds_worker(_f *f, const Sequence_set *seqs, unsigned begin, unsigned end, pair<size_t,size_t> shape_range, const _filter *filter)
 	{
 		static const char *errmsg = "Unsupported contiguous seed.";
-		if (shape_range.second - shape_range.first == 1 && shapes[shape_range.first].contiguous()) {
+		if (shape_range.second - shape_range.first == 1 && shapes[shape_range.first].contiguous() && shapes.count() == 1) {
 			const uint64_t b = Reduction::reduction.bit_size(), l = shapes[shape_range.first].length_;
 			switch (l) {
 			case 7:

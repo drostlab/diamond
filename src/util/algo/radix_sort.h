@@ -1,6 +1,8 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2018 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2020 Max Planck Society for the Advancement of Science e.V.
+
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,31 +18,36 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
-#ifndef RADIX_SORT2_H_
-#define RADIX_SORT2_H_
-
-#include <algorithm>
+#pragma once
+#include <utility>
+#include <stdint.h>
 #include "radix_cluster.h"
+#include "../math/integer.h"
 
-/*template<typename _t>
-void radix_sort(Relation<_t> &R, unsigned total_bits, _t *buf = 0)
-{
-	bool dealloc = false;
-	if (!buf) {
-		//buf = new _t[R.n];
-		//buf = (_t*)new char[sizeof(_t)*R.n];
-		buf = (_t*)MemoryPool::global().alloc(sizeof(_t)*R.n);
-		dealloc = true;
-	}
-	unsigned *hst = new unsigned[1 << config.radix_bits];
-	_t *in = R.data, *out = buf;
-	for (int bits = (int)total_bits; bits > 0; bits -= config.radix_bits) {
-		radix_cluster(Relation<_t>(in, R.n), total_bits - bits, out, hst);
+template<typename _t, typename _get_key>
+void radix_sort(_t* begin, _t* end, uint32_t max_key, size_t threads) {
+	typedef typename _t::Key Key;
+	const size_t n = end - begin;
+	if (n <= 1)
+		return;
+	const uint32_t bit_len = (uint32_t)bit_length(max_key), rounds = (bit_len + config.radix_bits - 1) / config.radix_bits;
+	_t* buf = (_t*)new char[n * sizeof(_t)];
+
+	_t* in = begin, * out = buf;
+	for (uint32_t i = 0; i < rounds; ++i) {
+		if(threads > 1)
+			parallel_radix_cluster<_t, _get_key>(Relation<_t>(in, n), i * config.radix_bits, out, threads);
+		else {
+			unsigned *hst = new unsigned[1 << config.radix_bits];
+			radix_cluster< _t, _get_key>(Relation<_t>(in, n), i * config.radix_bits, out, hst);
+			delete[] hst;
+		}
+
 		std::swap(in, out);
 	}
-	//if(dealloc) delete[] buf;
-	if (dealloc) MemoryPool::global().free(buf);
-	delete[] hst;
-}*/
 
-#endif
+	if (out == begin)
+		std::copy(buf, buf + n, begin);
+
+	delete[] buf;
+}

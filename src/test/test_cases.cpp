@@ -1,8 +1,8 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
-                        Benjamin Buchfink
-                        Eberhard Karls Universitaet Tuebingen
+Copyright (C) 2019-2020 Max Planck Society for the Advancement of Science e.V.
+
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -20,13 +20,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "test.h"
 
+using std::vector;
+
 namespace Test {
 
-const TestCase test_cases[] = {
+const vector<TestCase> test_cases = {
 { "blastp (default)", "blastp -p1" },
 { "blastp (multithreaded)", "blastp -p4" },
 { "blastp (blocked)", "blastp -c1 -b0.00002 -p4" },
 { "blastp (more-sensitive)", "blastp --more-sensitive -c1 -p4" },
+{ "blastp (target-parallel)", "blastp --more-sensitive -c1 -p4 --query-parallel-limit 1" },
+{ "blastp (query-indexed)", "blastp --more-sensitive -c1 -p4 --algo 1" },
 { "blastp (target seqs)", "blastp -k3 -c1 -p4" },
 { "blastp (top)", "blastp --top 10 -p4"},
 { "blastp (evalue)", "blastp -e10000 --more-sensitive -c1 -p4" },
@@ -36,18 +40,20 @@ const TestCase test_cases[] = {
 { "blastp (PAF format)", "blastp -c1 -f paf -p1" }
 };
 
-const uint64_t ref_hashes[] = {
-0xd03ed9ee31fc5d64,
-0xd03ed9ee31fc5d64,
-0x361c617388d5cb55,
-0x47b6f14da0c6a7d3,
-0x938b7662efce5ee4,
+const vector<uint64_t> ref_hashes = {
+0x4f959b7506a0b621,
+0x4f959b7506a0b621,
+0x2d95a36e0a13bf9b,
+0x959b05442e7bfebf,
+0x959b05442e7bfebf,
+0x9713e8c96114d257,
+0x66b239e917fb14d1,
 0x8ac0057c68f8c239,
-0x284d7885b1e7f5dc,
-0x12885fdee89cd143,
-0xbfa21ea5712d871c,
-0x2b0922c2d8a6de72,
-0x6fa5019017db2bbd,
+0xcc42d6752cbc88c1,
+0xa76a583e6fe4c891,
+0xc40f9bffc00c4f97,
+0x791b24944e18a96c,
+0xdf32d46bc18e400a,
 };
 
 }

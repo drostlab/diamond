@@ -40,8 +40,11 @@ void mask(Letter *seq,
 	float p_repeat_end,
 	float repeat_growth,
 	float p_mask,
-	const char *mask_table) {
+	const Letter *mask_table) {
 	constexpr int WINDOW = 50, RESERVE = 50000;
+
+	if (len == 0)
+		return;
 
 	thread_local std::array<Array<float, Dynamic, 1>, AMINO_ACID_COUNT> e;
 	thread_local Array<float, Dynamic, 1> pb;
@@ -72,6 +75,7 @@ void mask(Letter *seq,
 		t *= d;
 		f *= f2f;
 		f += t;
+		
 		f *= e[(size_t)seq[i]].template segment<WINDOW>(len - i, WINDOW);
 		b = b * b2b + s * p_repeat_end;
 

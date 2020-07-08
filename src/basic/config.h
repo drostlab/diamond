@@ -1,6 +1,10 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2019 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
+                        Benjamin Buchfink
+                        Eberhard Karls Universitaet Tuebingen
+						
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,19 +20,20 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
-#ifndef CONFIG_H_
-#define CONFIG_H_
-
+#pragma once
 #include <string>
 #include <vector>
 #include <stdint.h>
 
-using std::string;
-using std::vector;
+enum class Sensitivity { FAST = 0, SENSITIVE = 1, MORE_SENSITIVE = 2, VERY_SENSITIVE = 3, ULTRA_SENSITIVE = 4 };
 
 struct Config
 {
-	vector<string> input_ref_file;
+
+	using string = std::string;
+	using string_vector = std::vector<std::string>;
+
+	string_vector input_ref_file;
 	unsigned	threads_;
 	string	database;
 	string	query_file;
@@ -50,7 +55,6 @@ struct Config
 	unsigned min_identities2;
 	double ungapped_xdrop;
 	int		raw_ungapped_xdrop;
-	unsigned window;
 	double		min_hit_score;
 	int min_hit_raw_score;
 	int		hit_band;
@@ -78,7 +82,7 @@ struct Config
 	unsigned	compress_temp;
 	double	toppercent;
 	string	daa_file;
-	vector<string>	output_format;
+	string_vector	output_format;
 	string	output_file;
 	bool		forwardonly;
 	unsigned fetch_size;
@@ -91,9 +95,8 @@ struct Config
 	unsigned local_align_mode;
 	bool extend_all;
 	bool slow_search;
-	vector<string> seq_no;
+	string_vector seq_no;
 	double rank_ratio;
-	double rank_ratio2;
 	double rank_factor;
 	bool ht_mode;
 	bool old_freq;
@@ -102,7 +105,7 @@ struct Config
 	bool mode_more_sensitive;
 	string matrix_file;
 	double lambda, K;
-	vector<string> shape_mask;
+	string_vector shape_mask;
 	unsigned seed_anchor;
 	unsigned query_gencode;
 	string unaligned;
@@ -200,16 +203,34 @@ struct Config
 	double inner_culling_overlap;
 	double min_band_overlap;
 	int min_realign_overhang;
-	bool fast_stage2;
+	bool beta;
 	int ungapped_window;
 	int gapped_filter_diag_score;
-	double gapped_filter_score;
 	double gapped_filter_evalue;
 	int gapped_filter_window;
 	bool output_hits;
 	double ungapped_evalue;
 	bool no_logfile;
 	bool no_heartbeat;
+	int band_bin;
+	int col_bin;
+	size_t file_buffer_size;
+	bool self;
+	size_t trace_pt_fetch_size;
+	uint32_t tile_size;
+	double short_query_ungapped_bitscore;
+	int short_query_max_len;
+	double gapped_filter_evalue1;
+	size_t ext_chunk_size;
+	double ext_min_yield;
+	string ext;
+	int full_sw_len;
+	double relaxed_evalue_factor;
+	string type;
+	bool raw;
+	bool mode_ultra_sensitive;
+
+	Sensitivity sensitivity;
 
 	enum {
 		makedb = 0, blastp = 1, blastx = 2, view = 3, help = 4, version = 5, getseq = 6, benchmark = 7, random_seqs = 8, compare = 9, sort = 10, roc = 11, db_stat = 12, model_sim = 13,
@@ -221,6 +242,12 @@ struct Config
 
 	enum { double_indexed = 0, query_indexed = 1, subject_indexed = 2 };
 	int algo;
+
+	string cluster_algo;
+	double cluster_mcl_inflation;
+	uint32_t cluster_mcl_expansion;
+	double cluster_mcl_sparsity_switch;
+	string	cluster_similarity;
 
 	enum { query_parallel = 0, target_parallel = 1 };
 	unsigned load_balancing;
@@ -278,6 +305,8 @@ struct Config
 			return padding;
 	}
 
+	void set_sens(Sensitivity sens);
+
 	bool mem_buffered() const { return tmpdir == "/dev/shm"; }
 
   	template<typename _t>
@@ -285,5 +314,3 @@ struct Config
 };
 
 extern Config config;
-
-#endif

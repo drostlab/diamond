@@ -1,6 +1,8 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2019 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2020 Max Planck Society for the Advancement of Science e.V.
+
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -20,41 +22,49 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "search.h"
 #include "../util/map.h"
 #include "../data/queries.h"
-#include "hit_filter.h"
 #include "../data/reference.h"
-#include "collision.h"
-#include "../dp/dp_matrix.h"
 #include "../dp/ungapped.h"
 #include "../util/sequence/sequence.h"
 #include "../dp/ungapped_simd.h"
 #include "../dp/dp.h"
 #include "left_most.h"
+#include "../util/simd/vector.h"
+#include "../dp/scan_diags.h"
+#include "finger_print.h"
+#include "../util/algo/all_vs_all.h"
+#include "../util/text_buffer.h"
+#include "../util/memory/alignment.h"
+
+using std::vector;
 
 namespace Search {
 namespace DISPATCH_ARCH {
 
-#ifdef __SSE2__
+/*static bool gapped_filter(const LongScoreProfile& query_profile, const Letter *subject, int query_len) {
+	const int l = (int)query_profile.length();
+	int scores[64];
+	DP::scan_diags64(query_profile, sequence(subject, l), -32, 0, l, scores);
+	return score_matrix.evalue_norm(DP::diag_alignment(scores, 64), query_len) <= config.gapped_filter_evalue2;
+}*/
 
-template<typename _score> thread_local vector<score_vector<_score>> DP_matrix<_score>::scores_;
-template<typename _score> thread_local vector<score_vector<_score>> DP_matrix<_score>::hgap_;
-
-thread_local vector<sequence> hit_filter::subjects_;
-
-void search_query_offset(Loc q,
+void search_query_offset(uint64_t q,
 	const Packed_loc* s,
-	vector<Stage1_hit>::const_iterator hits,
-	vector<Stage1_hit>::const_iterator hits_end,
+	const uint32_t *hits,
+	const uint32_t *hits_end,
 	Statistics& stats,
 	Trace_pt_buffer::Iterator& out,
 	const unsigned sid,
-	const Context &context)
+	const Context& context)
 {
-	if (hits_end <= hits)
-		return;
+	// thread_local LongScoreProfile query_profile;
+	thread_local TextBuffer output_buf;
+
+	constexpr auto N = vector<Stage1_hit>::const_iterator::difference_type(::DISPATCH_ARCH::SIMD::Vector<int8_t>::CHANNELS);
+	const bool long_subject_offsets = ::long_subject_offsets();
 	const Letter* query = query_seqs::data_->data(q);
 
-	const Letter* subjects[16];
-	int scores[16];
+	const Letter* subjects[N];
+	int scores[N];
 
 	const sequence query_clipped = Util::Sequence::clip(query - config.ungapped_window, config.ungapped_window * 2, config.ungapped_window);
 	const int window_left = int(query - query_clipped.data()), window = (int)query_clipped.length();
@@ -62,144 +72,109 @@ void search_query_offset(Loc q,
 	std::pair<size_t, size_t> l = query_seqs::data_->local_position(q);
 	query_id = (unsigned)l.first;
 	seed_offset = (unsigned)l.second;
-	const unsigned query_len = query_seqs::data_->length(query_id);
+	const int query_len = query_seqs::data_->length(query_id);
+	const int score_cutoff = query_len > config.short_query_max_len ? context.cutoff_table(query_len) : context.short_query_ungapped_cutoff;
+	size_t hit_count = 0;
+	// bool ps = false;
 
-	for (vector<Stage1_hit>::const_iterator i = hits; i < hits_end; i += 16) {
+	for (const uint32_t *i = hits; i < hits_end; i += N) {
 
-		const size_t n = std::min(vector<Stage1_hit>::const_iterator::difference_type(16), hits_end - i);
+		const size_t n = std::min(N, hits_end - i);
 		for (size_t j = 0; j < n; ++j)
-			subjects[j] = ref_seqs::data_->data(s[(i + j)->s]) - window_left;
-		DP::window_ungapped(query_clipped.data(), subjects, n, window, scores);
+			subjects[j] = ref_seqs::data_->data(s[*(i + j)]) - window_left;
+		DP::window_ungapped_best(query_clipped.data(), subjects, n, window, scores);
 
-		for (size_t j = 0; j < n; ++j)
-			//if (scores[j] >= config.min_ungapped_raw_score) {
-			if (score_matrix.evalue_norm(scores[j], query_len) <= config.ungapped_evalue) {
+		for (size_t j = 0; j < n; ++j) {
+			if (scores[j] > score_cutoff) {
 				stats.inc(Statistics::TENTATIVE_MATCHES2);
-				/*const sequence subject_clipped = Util::Sequence::clip(subjects[j], window, window_left);
-				const int delta = int(subject_clipped.data() - subjects[j]);
-				assert(delta <= window_left);
-				if (is_primary_hit(query_clipped.data() + delta, subject_clipped.data(), window_left - delta, sid, (unsigned)subject_clipped.length())) {*/
-				if(left_most_filter(query_clipped, subjects[j], window_left, shapes[sid].length_, context, sid == 0)) {
+				if (left_most_filter(query_clipped, subjects[j], window_left, shapes[sid].length_, context, sid == 0, sid, score_cutoff)) {
 					stats.inc(Statistics::TENTATIVE_MATCHES3);
-					/*if (query_id == UINT_MAX) {
-						std::pair<size_t, size_t> l = query_seqs::data_->local_position(q);
-						query_id = (unsigned)l.first;
-						seed_offset = (unsigned)l.second;
+					//if (config.gapped_filter_evalue2 == 0.0)
+					if (hit_count == 0) {
+						output_buf.clear();
+						output_buf.write_varint(query_id);
+						output_buf.write_varint(seed_offset);
+					}
+					if (long_subject_offsets)
+						output_buf.write_raw((const char*)&s[*(i + j)], 5);
+					else
+						output_buf.write(s[*(i + j)].low);
+					output_buf.write((uint16_t)scores[j]);
+					++hit_count;
+					/*else {
+						if (!ps) {
+							query_profile.set(query_clipped);
+							ps = true;
+						}
+						if (gapped_filter(query_profile, subjects[j], query_len)) {
+							stats.inc(Statistics::TENTATIVE_MATCHES4);
+							out.push(hit(query_id, s[(i + j)->s], seed_offset));
+						}
 					}*/
-					out.push(hit(query_id, s[(i + j)->s], seed_offset));
 				}
 			}
-	}
-
-}
-
-void search_query_offset_legacy(Loc q,
-	const Packed_loc *s,
-	vector<Stage1_hit>::const_iterator hits,
-	vector<Stage1_hit>::const_iterator hits_end,
-	Statistics &stats,
-	Trace_pt_buffer::Iterator &out,
-	const unsigned sid)
-{
-	if (hits_end <= hits)
-		return;
-	const Letter* query = query_seqs::data_->data(q);
-	hit_filter hf(stats, q, out);
-
-	for (vector<Stage1_hit>::const_iterator i = hits; i < hits_end; ++i) {
-		const Loc s_pos = s[i->s];
-		const Letter* subject = ref_seqs::data_->data(s_pos);
-
-		unsigned delta, len;
-		int score;
-		if ((score = stage2_ungapped(query, subject, sid, delta, len)) < config.min_ungapped_raw_score)
-			continue;
-
-		stats.inc(Statistics::TENTATIVE_MATCHES2);
-
-		if (!is_primary_hit(query - delta, subject - delta, delta, sid, len))
-			continue;
-
-		stats.inc(Statistics::TENTATIVE_MATCHES3);
-		hf.push(s_pos, score);
-	}
-
-	hf.finish();
-}
-
-#else
-
-void search_query_offset(Loc q,
-	const Packed_loc *s,
-	vector<Stage1_hit>::const_iterator hits,
-	vector<Stage1_hit>::const_iterator hits_end,
-	Statistics &stats,
-	Trace_pt_buffer::Iterator &out,
-	const unsigned sid)
-{
-	const Letter* query = query_seqs::data_->data(q);
-	unsigned q_num_ = std::numeric_limits<unsigned>::max(), seed_offset_;
-
-	for (vector<Stage1_hit>::const_iterator i = hits; i < hits_end; ++i) {
-		const Loc s_pos = s[i->s];
-		const Letter* subject = ref_seqs::data_->data(s_pos);
-
-		unsigned delta, len;
-		int score;
-		if ((score = stage2_ungapped(query, subject, sid, delta, len)) < config.min_ungapped_raw_score)
-			continue;
-
-		stats.inc(Statistics::TENTATIVE_MATCHES2);
-
-#ifndef NO_COLLISION_FILTER
-		if (!is_primary_hit(query - delta, subject - delta, delta, sid, len))
-			continue;
-#endif
-
-		stats.inc(Statistics::TENTATIVE_MATCHES3);
-
-		if (score < config.min_hit_raw_score) {
-			const sequence s = ref_seqs::data_->fixed_window_infix(s_pos + config.seed_anchor);
-			unsigned left;
-			sequence query(query_seqs::data_->window_infix(q + config.seed_anchor, left));
-			score = smith_waterman(query, s, config.hit_band, left, score_matrix.gap_open() + score_matrix.gap_extend(), score_matrix.gap_extend());
-		}
-		if (score >= config.min_hit_raw_score) {
-			if (q_num_ == std::numeric_limits<unsigned>::max()) {
-				std::pair<size_t, size_t> l(query_seqs::data_->local_position(q));
-				q_num_ = (unsigned)l.first;
-				seed_offset_ = (unsigned)l.second;
-			}
-			out.push(hit(q_num_, s_pos, seed_offset_));
-			stats.inc(Statistics::TENTATIVE_MATCHES4);
 		}
 	}
+
+	if (hit_count > 0) {
+		if (long_subject_offsets)
+			output_buf.write(packed_uint40_t(0));
+		else
+			output_buf.write((uint32_t)0);
+		out.push(query_id / align_mode.query_contexts, output_buf.get_begin(), output_buf.size(), hit_count);
+	}
 }
 
-#endif
+struct Stage2 {
 
-void stage2(const Packed_loc *q,
-	const Packed_loc *s,
-	const vector<Stage1_hit> &hits,
-	Statistics &stats,
-	Trace_pt_buffer::Iterator &out,
-	const unsigned sid,
-	const Context &context)
+	Stage2(const Packed_loc* q, const Packed_loc* s, Statistics& stat, Trace_pt_buffer::Iterator& out, unsigned sid, const Context& context):
+		q(q),
+		s(s),
+		stat(stat),
+		out(out),
+		sid(sid),
+		context(context)
+	{}
+
+	void operator()(const FlatArray<uint32_t> &hits, uint32_t query_begin, uint32_t subject_begin) {
+		stat.inc(Statistics::TENTATIVE_MATCHES1, hits.data_size());
+		const uint32_t query_count = (uint32_t)hits.size();
+		const Packed_loc* q_begin = q + query_begin, * s_begin = s + subject_begin;
+		for (uint32_t i = 0; i < query_count; ++i) {
+			const uint32_t* r1 = hits.begin(i), * r2 = hits.end(i);
+			if (r2 == r1)
+				continue;
+			search_query_offset(q_begin[i], s_begin, r1, r2, stat, out, sid, context);
+		}
+	}
+
+	const Packed_loc* q, * s;
+	Statistics& stat;
+	Trace_pt_buffer::Iterator& out;
+	const unsigned sid;
+	const Context& context;
+
+};
+
+typedef vector<Finger_print, Util::Memory::AlignmentAllocator<Finger_print, 16>> Container;
+
+static void load_fps(const Packed_loc* p, size_t n, Container& v, const Sequence_set& seqs)
 {
-	typedef Map<vector<Stage1_hit>::const_iterator, Stage1_hit::Query> Map_t;
-	Map_t map(hits.begin(), hits.end());
-	if (config.fast_stage2) {
-		for (Map_t::Iterator i = map.begin(); i.valid(); ++i)
-			search_query_offset(q[i.begin()->q], s, i.begin(), i.end(), stats, out, sid, context);
-	}
-	else {
-		for (Map_t::Iterator i = map.begin(); i.valid(); ++i)
-#ifdef __SSE2__
-			search_query_offset_legacy(q[i.begin()->q], s, i.begin(), i.end(), stats, out, sid);
-#else
-			search_query_offset(q[i.begin()->q], s, i.begin(), i.end(), stats, out, sid);
-#endif
-	}
+	v.clear();
+	v.reserve(n);
+	const Packed_loc* end = p + n;
+	for (; p < end; ++p)
+		v.emplace_back(seqs.data(*p));
+}
+
+void stage1(const Packed_loc* q, size_t nq, const Packed_loc* s, size_t ns, Statistics& stats, Trace_pt_buffer::Iterator& out, const unsigned sid, const Context& context)
+{
+	thread_local Container vq, vs;
+	stats.inc(Statistics::SEED_HITS, nq * ns);
+	load_fps(q, nq, vq, *query_seqs::data_);
+	load_fps(s, ns, vs, *ref_seqs::data_);
+	Stage2 callback(q, s, stats, out, sid, context);
+	all_vs_all(vq.data(), vq.size(), vs.data(), vs.size(), config.tile_size, callback);
 }
 
 }}

@@ -16,6 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
+#pragma once
 #include <memory>
 #include "value.h"
 #include "score_matrix.h"
@@ -34,11 +35,11 @@ struct Masking
 		return *instance;
 	}
 	static std::unique_ptr<Masking> instance;
-	static const uint8_t bit_mask;
+	static const int8_t bit_mask;
 private:
 	enum { size = 64 };
 	float likelihoodRatioMatrixf_[size][size], *probMatrixPointersf_[size];
-	char mask_table_x_[size], mask_table_bit_[size];
+	Letter mask_table_x_[size], mask_table_bit_[size];
 };
 
 size_t mask_seqs(Sequence_set &seqs, const Masking &masking, bool hard_mask = true);

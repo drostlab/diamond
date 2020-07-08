@@ -1,6 +1,8 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2019 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2020 Max Planck Society for the Advancement of Science e.V.
+
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,14 +18,15 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
-
-#ifndef MEM_BUFFER_H_
-#define MEM_BUFFER_H_
-
-#include <stdlib.h>
+#pragma once
+#include "../memory/alignment.h"
 
 template<typename _t>
 struct MemBuffer {
+
+	enum { ALIGN = 32 };
+
+	typedef _t value_type;
 
 	MemBuffer():
 		data_(nullptr),
@@ -32,19 +35,20 @@ struct MemBuffer {
 	{}
 
 	MemBuffer(size_t n):
-		data_((_t*)malloc(n * sizeof(_t))),
+		data_((_t*)Util::Memory::aligned_malloc(n * sizeof(_t), ALIGN)),
 		size_(n),
 		alloc_size_(n)
-	{}
+	{
+	}
 
 	~MemBuffer() {
-		free(data_);
+		Util::Memory::aligned_free(data_);
 	}
 
 	void resize(size_t n) {
 		if (alloc_size_ < n) {
-			free(data_);
-			data_ = (_t*)malloc(n * sizeof(_t));
+			Util::Memory::aligned_free(data_);
+			data_ = (_t*)Util::Memory::aligned_malloc(n * sizeof(_t), ALIGN);
 			alloc_size_ = n;
 		}
 		size_ = n;
@@ -76,5 +80,3 @@ private:
 	size_t size_, alloc_size_;
 
 };
-
-#endif

@@ -1,6 +1,10 @@
 /****
 DIAMOND protein aligner
-Copyright (C) 2013-2017 Benjamin Buchfink <buchfink@gmail.com>
+Copyright (C) 2013-2020 Max Planck Society for the Advancement of Science e.V.
+                        Benjamin Buchfink
+                        Eberhard Karls Universitaet Tuebingen
+						
+Code developed by Benjamin Buchfink <benjamin.buchfink@tue.mpg.de>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,38 +20,42 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ****/
 
-#ifndef TRACE_PT_BUFFER_H_
-#define TRACE_PT_BUFFER_H_
-
+#pragma once
+#include <stdint.h>
 #include "../util/async_buffer.h"
 #include "../basic/match.h"
+#include "../util/io/deserializer.h"
+#include "../data/reference.h"
 
 #pragma pack(1)
 
 struct hit
 {
 	typedef uint32_t Seed_offset;
+	typedef uint64_t Key;
 
-	unsigned	query_;
-	Packed_loc	subject_;
+	uint32_t query_;
+	Packed_loc subject_;
 	Seed_offset	seed_offset_;
+	uint16_t score_;
 	hit() :
 		query_(),
 		subject_(),
 		seed_offset_()
 	{ }
-	hit(unsigned query, Packed_loc subject, Seed_offset seed_offset) :
+	hit(unsigned query, Packed_loc subject, Seed_offset seed_offset, uint16_t score = 0) :
 		query_(query),
 		subject_(subject),
-		seed_offset_(seed_offset)
+		seed_offset_(seed_offset),
+		score_(score)
 	{ }
-	bool operator<(const hit &rhs) const
+	bool operator<(const hit& rhs) const
 	{
 		return query_ < rhs.query_;
 	}
 	bool blank() const
 	{
-		return subject_ == 0;
+		return uint64_t(subject_) == 0;
 	}
 	unsigned operator%(unsigned i) const
 	{
@@ -77,11 +85,23 @@ struct hit
 			return query_id<_d>(x);
 		}
 	};
-	static bool cmp_subject(const hit &lhs, const hit &rhs)
-	{
-		return lhs.subject_ < rhs.subject_
-			|| (lhs.subject_ == rhs.subject_ && lhs.seed_offset_ < rhs.seed_offset_);
-	}
+	struct Query {
+		unsigned operator()(const hit& h) const {
+			return h.query_;
+		}
+	};
+	struct Subject {
+		uint64_t operator()(const hit& h) const {
+			return h.subject_;
+		}
+	};
+	struct CmpSubject {
+		bool operator()(const hit& lhs, const hit& rhs) const
+		{
+			return lhs.subject_ < rhs.subject_
+				|| (lhs.subject_ == rhs.subject_ && lhs.seed_offset_ < rhs.seed_offset_);
+		}
+	};
 	static bool cmp_normalized_subject(const hit &lhs, const hit &rhs)
 	{
 		const uint64_t x = (uint64_t)lhs.subject_ + (uint64_t)rhs.seed_offset_, y = (uint64_t)rhs.subject_ + (uint64_t)lhs.seed_offset_;
@@ -92,8 +112,36 @@ struct hit
 	}
 	friend std::ostream& operator<<(std::ostream &s, const hit &me)
 	{
-		s << me.query_ << '\t' << me.subject_ << '\t' << me.seed_offset_ << '\n';
+		s << me.query_ << '\t' << uint64_t(me.subject_) << '\t' << me.seed_offset_ << '\n';
 		return s;
+	}
+	template<typename _it>
+	static size_t read(Deserializer& s, _it it) {
+		const bool l = long_subject_offsets();
+		uint32_t query_id, seed_offset;
+		s.varint = true;
+		s >> query_id >> seed_offset;
+		Packed_loc subject_loc;
+		size_t count = 0;
+		uint32_t x;
+		s.varint = false;
+		for (;;) {
+			if (l) {
+				s.read(subject_loc);
+				if (uint64_t(subject_loc) == 0)
+					return count;
+			}
+			else {
+				s.read(x);
+				if (x == 0)
+					return count;
+				subject_loc = x;
+			}
+			uint16_t score;
+			s.read(score);
+			*it = { query_id, subject_loc, seed_offset, score };
+			++count;
+		}
 	}
 } PACKED_ATTRIBUTE;
 
@@ -106,88 +154,3 @@ struct Trace_pt_buffer : public Async_buffer<hit>
 	{}
 	static Trace_pt_buffer *instance;
 };
-
-struct Trace_pt_list : public vector<hit>
-{
-	void init()
-	{
-		pos_ = this->begin();
-		total_ = 0;
-		count_ = 1;
-#ifdef PRE_PARTITION
-		p_.clear();
-		p_.push_back(0);
-		idx_ = 0;
-		const unsigned c = query_contexts();
-		typename vector<hit<_locr,_locl> >::iterator i = this->begin();
-		unsigned total=0,count=1;
-		for(; i < this->end();) {
-			unsigned n=0;
-			const unsigned min_size = std::max(4*total/count/5 + 1, program_options::fetch_size);
-			for(;i<this->end() && n<min_size;) {
-				const unsigned q = i->query_/c;
-				for(; i<this->end() && i->query_/c == q; ++i)
-					++n;
-			}
-			++count;
-			total += n;
-			p_.push_back(i - this->begin());
-		}
-		p_.push_back(i - this->begin());
-#endif
-	}
-	struct Query_range
-	{
-		Query_range(Trace_pt_list &parent):
-			parent_ (parent)
-		{ }
-#ifndef PRE_PARTITION
-		bool operator()()
-		{
-
-			begin = parent_.pos_;
-			//end = std::min(std::max(begin + 3*parent_.total_/parent_.count_/4 + 1, begin+program_options::fetch_size), parent_.end());
-#ifdef NDEBUG
-			end = std::min(begin + 3*parent_.total_/parent_.count_/4 + 1, parent_.end());
-#else
-			//end = parent_.end();
-			ptrdiff_t x = std::min((ptrdiff_t)(3 * parent_.total_ / parent_.count_ / 4 + 1), parent_.end() - begin);
-			end = std::min(begin + x, parent_.end());
-#endif
-			if(end >= parent_.end())
-				return false;
-			const unsigned c = align_mode.query_contexts, q = end->query_/c;
-			for(; end<parent_.end() && end->query_/c == q; ++end);
-			parent_.pos_ = end;
-			parent_.total_ += end - begin;
-			++parent_.count_;
-			return end < parent_.end();
-		}
-#else
-		bool operator()()
-		{
-			begin = parent_.begin()+parent_.p_[parent_.idx_];
-			end = parent_.begin()+parent_.p_[parent_.idx_+1];
-			printf("%lu %lu %lu\n", parent_.p_[parent_.idx_], parent_.p_[parent_.idx_+1], parent_.p_[parent_.idx_+1]-parent_.p_[parent_.idx_]);
-			++parent_.idx_;
-			return parent_.idx_ < parent_.p_.size()-1;
-		}
-#endif
-		Trace_pt_list::iterator begin, end;
-	private:
-		Trace_pt_list &parent_;
-	};
-	Query_range get_range()
-	{ return Query_range (*this); }
-private:
-	vector<hit>::iterator pos_;
-#ifdef PRE_PARTITION
-	vector<size_t> p_;
-	unsigned idx_;
-#else
-	size_t total_, count_;
-#endif
-};
-
-#endif /* TRACE_PT_BUFFER_H_ */
-
