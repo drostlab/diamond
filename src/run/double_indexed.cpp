@@ -91,6 +91,9 @@ void run_ref_chunk(DatabaseFile &db_file,
 
 		timer.go("Deallocating buffers");
 		delete[] ref_buffer;
+
+		timer.go("Clearing query masking");
+		Frequent_seeds::clear_masking(*query_seqs::data_);
 	}
 
 	Consumer* out;
@@ -134,18 +137,25 @@ void run_query_chunk(DatabaseFile &db_file,
 	if (query_chunk == 0)
 		setup_search_cont();
 	if (config.algo == -1) {
-		query_seeds = new Seed_set(query_seqs::get(), SINGLE_INDEXED_SEED_SPACE_MAX_COVERAGE);
-		timer.finish();
-		log_stream << "Seed space coverage = " << query_seeds->coverage() << endl;
-		if (use_single_indexed(query_seeds->coverage(), query_seqs::get().letters(), db_file.ref_header.letters))
-			config.algo = Config::query_indexed;
-		else {
+		if (config.sensitivity >= Sensitivity::VERY_SENSITIVE) {
 			config.algo = Config::double_indexed;
-			delete query_seeds;
-			query_seeds = NULL;
+		}
+		else {
+			query_seeds = new Seed_set(query_seqs::get(), SINGLE_INDEXED_SEED_SPACE_MAX_COVERAGE);
+			timer.finish();
+			log_stream << "Seed space coverage = " << query_seeds->coverage() << endl;
+			if (use_single_indexed(query_seeds->coverage(), query_seqs::get().letters(), db_file.ref_header.letters))
+				config.algo = Config::query_indexed;
+			else {
+				config.algo = Config::double_indexed;
+				delete query_seeds;
+				query_seeds = NULL;
+			}
 		}
 	}
 	else if (config.algo == Config::query_indexed) {
+		if (config.sensitivity >= Sensitivity::VERY_SENSITIVE)
+			throw std::runtime_error("Query-indexed algorithm not available for this sensitivity setting.");
 		query_seeds = new Seed_set(query_seqs::get(), 2);
 		timer.finish();
 		log_stream << "Seed space coverage = " << query_seeds->coverage() << endl;
@@ -162,7 +172,6 @@ void run_query_chunk(DatabaseFile &db_file,
 
 	char *query_buffer = nullptr;
 	const pair<size_t, size_t> query_len_bounds = query_seqs::data_->len_bounds(shapes[0].length_);
-	setup_search_params(query_len_bounds, 0);
 
 	if (!config.swipe_all) {
 		timer.go("Building query histograms");		
@@ -321,14 +330,10 @@ void run(const Options &options)
 
 	message_stream << "Temporary directory: " << TempFile::get_temp_dir() << endl;
 
-	if (config.mode_very_sensitive) {
+	if (config.sensitivity >= Sensitivity::VERY_SENSITIVE)
 		Config::set_option(config.chunk_size, 0.4);
-		Config::set_option(config.lowmem, 1u);
-	}
-	else {
+	else
 		Config::set_option(config.chunk_size, 2.0);
-		Config::set_option(config.lowmem, 4u);
-	}
 
 	task_timer timer("Opening the database", 1);
 	DatabaseFile *db_file = options.db ? options.db : DatabaseFile::auto_create_from_fasta();

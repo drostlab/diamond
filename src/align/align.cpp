@@ -122,6 +122,7 @@ void align_worker(size_t thread_id, const Parameters *params, const Metadata *me
 			hits.release();
 			continue;
 		}
+		task_timer timer;
 		vector<Extension::Match> matches = Extension::extend(*params, hits.query, hits.begin, hits.end, *metadata, stat, hits.target_parallel ? Extension::TARGET_PARALLEL : 0);
 		TextBuffer *buf = Extension::generate_output(matches, hits.query, stat, *metadata, *params);
 		if (!matches.empty() && (!config.unaligned.empty() || !config.aligned_file.empty())) {
@@ -130,6 +131,8 @@ void align_worker(size_t thread_id, const Parameters *params, const Metadata *me
 			query_aligned_mtx.unlock();
 		}
 		OutputSink::get().push(hits.query, buf);
+		if (hits.target_parallel)
+			stat.inc(Statistics::TIME_TARGET_PARALLEL, timer.microseconds());
 		hits.release();
 	}
 	statistics += stat;
@@ -138,7 +141,9 @@ void align_worker(size_t thread_id, const Parameters *params, const Metadata *me
 
 void align_queries(Trace_pt_buffer &trace_pts, Consumer* output_file, const Parameters &params, const Metadata &metadata)
 {
-	const size_t max_size = std::min(size_t(config.chunk_size*1e9 * 9 * 2) / config.lowmem, config.trace_pt_fetch_size);
+	size_t max_size = std::min(size_t(config.chunk_size*1e9 * 10 * 2) / config.lowmem / 3, config.trace_pt_fetch_size);
+	if (config.memory_limit != 0.0)
+		max_size = std::max(max_size, size_t(config.memory_limit * 1e9));
 	pair<size_t, size_t> query_range;
 	vector<sequence> subjects;
 	if (config.swipe_all) {
@@ -160,10 +165,10 @@ void align_queries(Trace_pt_buffer &trace_pts, Consumer* output_file, const Para
 		trace_pts.load(max_size);
 
 		timer.go("Sorting trace points");
-		if (config.beta)
+		//if (config.beta)
 			radix_sort<hit, hit::Query>(hit_buf->data(), hit_buf->data() + hit_buf->size(), (uint32_t)query_range.second, config.threads_);
-		else
-			merge_sort(hit_buf->begin(), hit_buf->end(), config.threads_);
+		//else
+			//merge_sort(hit_buf->begin(), hit_buf->end(), config.threads_);
 		statistics.inc(Statistics::TIME_SORT_SEED_HITS, timer.microseconds());
 
 		timer.go("Computing alignments");
