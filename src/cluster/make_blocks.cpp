@@ -388,7 +388,7 @@ vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstre
 	}
 	else {
 		if (config.linclust_minichunk.empty()) {
-			minichunk_size = std::min(std::max(job.mem_limit / 16, 512 * MEGABYTES), 32 * GIGABYTES);
+			minichunk_size = std::min(std::max(job.mem_limit / 16, uint64_t(512 * MEGABYTES)), uint64_t(32 * GIGABYTES));
 			minichunk_size = std::max(minichunk_size, letters / (max_open_files_per_process() / 2));
 		}
 		else
