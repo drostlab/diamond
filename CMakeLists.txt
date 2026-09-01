@@ -18,6 +18,7 @@
 cmake_minimum_required (VERSION 2.6...3.5)
 project (DIAMOND)
 include(CheckCXXCompilerFlag)
+include(CheckIncludeFileCXX)
 include(CheckSymbolExists)
 include(CheckTypeSize)
 
@@ -179,6 +180,16 @@ else()
 endif()
 
 check_symbol_exists(sysinfo "sys/sysinfo.h" HAVE_SYSINFO)
+
+# malloc.h/malloc_trim are glibc-specific: absent on macOS/BSD and on musl.
+check_include_file_cxx("malloc.h" HAVE_MALLOC_H)
+if(HAVE_MALLOC_H)
+  add_definitions(-DHAVE_MALLOC_H)
+  check_symbol_exists(malloc_trim "malloc.h" HAVE_MALLOC_TRIM)
+  if(HAVE_MALLOC_TRIM)
+    add_definitions(-DHAVE_MALLOC_TRIM)
+  endif()
+endif()
 
 if(CMAKE_BUILD_MARCH)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=${CMAKE_BUILD_MARCH}")

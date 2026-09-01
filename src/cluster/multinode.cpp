@@ -18,7 +18,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <inttypes.h>
+#ifdef HAVE_MALLOC_H
 #include <malloc.h>
+#endif
 #include <cstdarg>
 #include <algorithm>
 #include <string>
@@ -332,7 +334,7 @@ void multinode() {
 			return;
 		if (i < rounds.size() - 1)
 			job.next_round();
-#ifndef _MSC_VER
+#ifdef HAVE_MALLOC_TRIM
 		malloc_trim(0);
 #endif
 	}

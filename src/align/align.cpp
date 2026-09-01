@@ -18,7 +18,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <iostream>
+#ifdef HAVE_MALLOC_H
 #include <malloc.h>
+#endif
 #include <memory>
 #include "basic/value.h"
 #include "align.h"
@@ -222,7 +224,7 @@ void align_queries(File* output_file, Search::Config& cfg)
 	pair<BlockId, BlockId> query_range;
 	TaskTimer timer("Allocating memory", 3);
 
-#ifndef _MSC_VER
+#ifdef HAVE_MALLOC_TRIM
 	malloc_trim(0);
 #endif
 	if (!cfg.blocked_processing && !cfg.iterated())
@@ -287,7 +289,7 @@ void align_queries(File* output_file, Search::Config& cfg)
 		timer.go("Deallocating buffers");
 		cfg.thread_pool.reset();
 		output_sink.reset();
-#ifndef _MSC_VER
+#ifdef HAVE_MALLOC_TRIM
 		malloc_trim(0);
 #endif
 	}
