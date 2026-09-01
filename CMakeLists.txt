@@ -140,7 +140,9 @@ add_definitions(-DMAX_SHAPE_LEN=${MAX_SHAPE_LEN})
 # container crossing that boundary (e.g. a std::string returned from an overridden
 # numpunct::do_grouping) is read at the wrong offsets and crashes. Only set it where
 # it is a no-op anyway.
-add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:_ITERATOR_DEBUG_LEVEL=0>)
+if(MSVC)
+  set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS $<$<NOT:$<CONFIG:Debug>>:_ITERATOR_DEBUG_LEVEL=0>)
+endif()
 
 IF(STATIC_LIBGCC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc")
