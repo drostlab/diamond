@@ -55,7 +55,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 /* The parameter and argument lists are passed as parenthesized blobs so that the
    commas separating them are hidden from the preprocessor. */
 
-#define DISPATCH_DECL(ret, name, params)\
+#define SIMD_DISPATCH_DECL(ret, name, params)\
 HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name params; })\
 HAVE_AVX2(namespace ARCH_AVX2 { ret name params; })\
 HAVE_AVX512(namespace ARCH_AVX512 { ret name params; })\
@@ -63,7 +63,7 @@ HAVE_NEON(namespace ARCH_NEON { ret name params; })
 
 /* `return f(...);` is well formed in a function returning void as long as f does,
    so this also serves the void variants below. */
-#define DISPATCH_BODY(name, args)\
+#define SIMD_DISPATCH_BODY(name, args)\
 HAVE_SIMD(switch(::SIMD::arch()) {)\
 HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name args;)\
 HAVE_AVX512(case ::SIMD::Arch::AVX512: return ARCH_AVX512::name args;)\
@@ -73,50 +73,50 @@ HAVE_SIMD(default:)\
 return ARCH_GENERIC::name args;\
 HAVE_SIMD(})
 
-#define DISPATCH_FN(ret, name, params, args)\
-DISPATCH_DECL(ret, name, params)\
+#define SIMD_DISPATCH_FN(ret, name, params, args)\
+SIMD_DISPATCH_DECL(ret, name, params)\
 ret name params {\
-DISPATCH_BODY(name, args)\
+SIMD_DISPATCH_BODY(name, args)\
 }
 
 #define DISPATCH_0V(name)\
-DISPATCH_FN(void, name, (), ())
+SIMD_DISPATCH_FN(void, name, (), ())
 
 #define DISPATCH_1V(name, t1, n1)\
-DISPATCH_FN(void, name, (t1 n1), (n1))
+SIMD_DISPATCH_FN(void, name, (t1 n1), (n1))
 
 #define DISPATCH_1(ret, name, t1, n1)\
-DISPATCH_FN(ret, name, (t1 n1), (n1))
+SIMD_DISPATCH_FN(ret, name, (t1 n1), (n1))
 
 #define DISPATCH_2(ret, name, t1, n1, t2, n2)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2), (n1, n2))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2), (n1, n2))
 
 #define DISPATCH_3(ret, name, t1, n1, t2, n2, t3, n3)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3), (n1, n2, n3))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3), (n1, n2, n3))
 
 #define DISPATCH_3V(name, t1, n1, t2, n2, t3, n3)\
-DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3), (n1, n2, n3))
+SIMD_DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3), (n1, n2, n3))
 
 #define DISPATCH_4(ret, name, t1, n1, t2, n2, t3, n3, t4, n4)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4), (n1, n2, n3, n4))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4), (n1, n2, n3, n4))
 
 #define DISPATCH_5(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5), (n1, n2, n3, n4, n5))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5), (n1, n2, n3, n4, n5))
 
 #define DISPATCH_6(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6), (n1, n2, n3, n4, n5, n6))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6), (n1, n2, n3, n4, n5, n6))
 
 #define DISPATCH_6V(name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6)\
-DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6), (n1, n2, n3, n4, n5, n6))
+SIMD_DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6), (n1, n2, n3, n4, n5, n6))
 
 #define DISPATCH_7(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6, t7, n7)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7), (n1, n2, n3, n4, n5, n6, n7))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7), (n1, n2, n3, n4, n5, n6, n7))
 
 #define DISPATCH_7V(name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6, t7, n7)\
-DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7), (n1, n2, n3, n4, n5, n6, n7))
+SIMD_DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7), (n1, n2, n3, n4, n5, n6, n7))
 
 #define DISPATCH_8(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6, t7, n7, t8, n8)\
-DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8), (n1, n2, n3, n4, n5, n6, n7, n8))
+SIMD_DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8), (n1, n2, n3, n4, n5, n6, n7, n8))
 
 #else
 
