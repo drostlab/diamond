@@ -239,7 +239,7 @@ double total_ram() {
 	struct sysinfo info;
 	if (sysinfo(&info) != 0)
 		return 0.0;
-	return (double)info.totalram / 1e9;
+	return (double)info.totalram * (double)info.mem_unit / 1e9;
 #else
 	return 0.0;
 #endif

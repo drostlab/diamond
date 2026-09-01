@@ -180,6 +180,9 @@ else()
 endif()
 
 check_symbol_exists(sysinfo "sys/sysinfo.h" HAVE_SYSINFO)
+if(HAVE_SYSINFO)
+  add_definitions(-DHAVE_SYSINFO)
+endif()
 
 # malloc.h/malloc_trim are glibc-specific: absent on macOS/BSD and on musl.
 check_include_file_cxx("malloc.h" HAVE_MALLOC_H)
