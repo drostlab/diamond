@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <inttypes.h>
+#include <algorithm>
 #include "multinode.h"
 #include "file_array.h"
 #include "input_buffer.h"
