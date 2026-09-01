@@ -225,7 +225,7 @@ const map<Sensitivity, SensitivityTraits> sensitivity_traits = {
 		2.0,       // default_block_size
 		murphy10,  // reduction
 		0,         // minimizer_window
-		0,          // sketch_size
+		0,         // sketch_size
 		3,         // keyword_length
 		8.4        // keyword_threshold
 	}},
@@ -242,7 +242,7 @@ const map<Sensitivity, SensitivityTraits> sensitivity_traits = {
 		nullptr,   // contiguous_seed
 		1.0,       // seed_cut
 		0.4,       // default_block_size
-		murphy10,  // reduction
+		diamond9,  // reduction
 		0,         // minimizer_window
 		0,         // sketch_size
 		3,         // keyword_length
@@ -332,21 +332,11 @@ const map<Sensitivity, vector<string>> shape_codes ={
 		"110011000110011",
 		"11011010001101",
 		"1101001100010011" }}, // 16x8 iedera
-	{Sensitivity::VERY_SENSITIVE, {
-		"11101111",
-		"110110111",
-		"111111001",
-		"1010111011",
-		"11110001011",
-		"110100101011",
-		"110110001101",
-		"1010101000111",
-		"1100101001011",
-		"1101010101001",
-		"1110010010011",
-		"110110000010011",
-		"111001000100011",
-		"1101000100010011",
+	{ Sensitivity::VERY_SENSITIVE, {
+		"11110111","11100100111","110010101011","11010001001011","10101100001101","110100100100011",
+"1010010100010011","1100101000001011","11100000100010101","11000100010010011","11010000001000111",
+"110001001000010011","1010001000100001011","1100010100000010011","1100100000101000011",
+"1101000010000001011"
 	}}, // 14x7
 	{ Sensitivity::ULTRA_SENSITIVE, {
 		"1111111",
@@ -576,11 +566,21 @@ void setup_search(Sensitivity sens, Search::Config& cfg)
 		if (sens == Sensitivity::DEFAULT)
 			Reduction::set_reduction("KR EQ D N C G H F Y IV LM W P S T A");
 		::shapes = ShapeConfig({ traits.contiguous_seed }, 0);
+		Reduction::set_reduction(traits.reduction);
 	}
-	else
+	else {
+		// The reduction has to be set before the shapes are built: Shape caches the letter
+		// mask of the hashed seed encoding, whose field width is that of the reduction.
+		Reduction::set_reduction(traits.reduction);
 		::shapes = ShapeConfig(config.shape_mask.empty() ? shape_codes.at(sens) : config.shape_mask, config.shapes);
+	}
 
-	Reduction::set_reduction(traits.reduction);
+	/* The on-disk seed index of --target-indexed is built over all seed positions
+	   (HashedSeedSet), so subsampling the query would silently drop hits. */
+	if (config.target_indexed) {
+		cfg.minimizer_window = 0;
+		cfg.sketch_size = 0;
+	}
 	if ((cfg.lin_stage1_target || config.lin_stage1_query) && shapes[0].weight_ < 10)
 		throw runtime_error("Linearization is only supported for seed shapes of weight >= 10.");
 

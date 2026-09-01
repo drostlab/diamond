@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "target.h"
 #include "search/hit.h"
 #include "data/sequence_set.h"
+#include "util/memory/mem_profile.h"
 
 namespace Extension {
 
@@ -42,6 +43,7 @@ static int64_t count_targets(It begin, It end) {
 
 template<typename It>
 static SeedHitList load_hits(It begin, It end, const SequenceSet& ref_seqs) {
+	MEM_SCOPE("extend/seed-hit-list");
 	std::sort(begin, end, Search::Hit::CmpSubject());	
 	const auto targets = count_targets(begin, end);
 	const auto hits = end - begin;
@@ -119,58 +121,6 @@ static SeedHitList load_hits(It begin, It end, const SequenceSet& ref_seqs) {
 #endif
 
 	return list;
-}
-
-static bool hamming_filter_without_boundaries(const SeedHit& hit, const Sequence& query, const Sequence& target, unsigned hamming_filter_id) {
-	constexpr int WINDOW_LEFT = 16, WINDOW_RIGHT = 32;
-	const int begin = std::max(std::max(-WINDOW_LEFT, -hit.i), -hit.j);
-	const int end = std::min(std::min(WINDOW_RIGHT, (int)query.length() - hit.i), (int)target.length() - hit.j);
-	const int len = end - begin;
-	if (len <= 0)
-		return false;
-	unsigned id = 0;
-	for (int i = begin; i < end; ++i)
-		if (query[hit.i + i] == target[hit.j + i])
-			++id;
-	return id >= hamming_filter_id;
-}
-
-static void filter_hamming_boundary_crossings(SeedHitList& list, const Sequence* query_seq, Loc query_len, const SequenceSet& ref_seqs, unsigned hamming_filter_id) {
-	if (hamming_filter_id == 0 || list.seed_hits.data_size() == 0)
-		return;
-#ifndef EVAL_TARGET
-	(void)query_len;
-#endif
-
-	SeedHitList filtered;
-	filtered.seed_hits.reserve(list.target_block_ids.size(), list.seed_hits.data_size());
-	filtered.target_block_ids.reserve(list.target_block_ids.size());
-	filtered.target_scores.reserve(list.target_scores.size());
-	for (size_t i = 0; i < list.target_block_ids.size(); ++i) {
-		const BlockId target_block_id = list.target_block_ids[i];
-		const Sequence target = ref_seqs[target_block_id];
-		bool target_started = false;
-		uint16_t score = 0;
-		for (auto hit = list.seed_hits.begin(i); hit != list.seed_hits.end(i); ++hit) {
-			if (!hamming_filter_without_boundaries(*hit, query_seq[hit->frame], target, hamming_filter_id))
-				continue;
-			if (!target_started) {
-				filtered.seed_hits.next();
-				filtered.target_block_ids.push_back(target_block_id);
-				target_started = true;
-			}
-			filtered.seed_hits.push_back(*hit);
-			score = std::max(score, (uint16_t)hit->score);
-		}
-		if (target_started) {
-#ifdef EVAL_TARGET
-			filtered.target_scores.push_back({ uint32_t(filtered.target_block_ids.size() - 1), score, score_matrix.evalue(score, query_len, target.length()) });
-#else
-			filtered.target_scores.push_back({ uint32_t(filtered.target_block_ids.size() - 1), score });
-#endif
-		}
-	}
-	list = std::move(filtered);
 }
 
 }

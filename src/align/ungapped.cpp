@@ -29,7 +29,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "reseek.h"
 #include "dp/ungapped.h"
 #include "util/parallel/thread_pool.h"
-#include "chaining/chaining.h"
+#include "util/memory/mem_profile.h"
+#include "legacy/chaining/chaining.h"
 #include "def.h"
 #include "util/geo/geo.h"
 
@@ -43,7 +44,7 @@ using std::runtime_error;
 
 namespace Extension {
 
-WorkTarget::WorkTarget(BlockId block_id, const Sequence& seq, const Query& query, Loc max_target_len, Statistics& stats, std::pmr::monotonic_buffer_resource& pool) :
+WorkTarget::WorkTarget(BlockId block_id, const Sequence& seq, const Query& query, Loc max_target_len, Statistics& stats, std::pmr::memory_resource& pool) :
 	block_id(block_id),
 	seq(seq),
 	done(false)
@@ -52,6 +53,7 @@ WorkTarget::WorkTarget(BlockId block_id, const Sequence& seq, const Query& query
 	Stats::EMatrixAdjustRule rule;
 	const unsigned cbs = static_cast<unsigned>(config.comp_based_stats_.get(Stats::DEFAULT_CBS));
 	if (!config.anchored_swipe && (rule = ::Stats::adjust_matrix(query.composition, query.true_aa_length, cbs, seq)) != Stats::eDontAdjustMatrix) {
+		MEM_SCOPE("extend/target-matrix");
 		matrix.reset(new ::Stats::TargetMatrix(query.composition, query.true_aa_length, cbs, seq, stats, pool, rule));
 		/*if (config.anchored_swipe) {
 			TaskTimer timer;
@@ -62,13 +64,16 @@ WorkTarget::WorkTarget(BlockId block_id, const Sequence& seq, const Query& query
 	}
 }
 
-WorkTarget ungapped_stage(FlatArray<SeedHit>::DataIterator begin, FlatArray<SeedHit>::DataIterator end, const Query& query, uint32_t block_id, Loc max_target_len, Statistics& stats, const Block& targets, const Mode mode, std::pmr::monotonic_buffer_resource& pool, const Search::Config& cfg) {
+WorkTarget ungapped_stage(FlatArray<SeedHit>::DataIterator begin, FlatArray<SeedHit>::DataIterator end, const Query& query, uint32_t block_id,
+	Loc max_target_len, Statistics& stats, const Block& targets, const Mode mode, std::pmr::memory_resource& pool, const Search::Config& cfg)
+{
 	array<vector<DiagonalSegment>, MAX_CONTEXT> diagonal_segments;
 	const SequenceSet& ref_seqs = targets.seqs(), &ref_seqs_unmasked = targets.unmasked_seqs();
 	//const bool masking = config.comp_based_stats == ::Stats::CBS::COMP_BASED_STATS_AND_MATRIX_ADJUST ? ::Stats::use_seg_masking(query.sequence[0], ref_seqs_unmasked[block_id]) : true;
 	const bool masking = true;
 	const bool reseek = config.reseek_diags || config.lin_stage1_query || config.lin_stage1_target;
 	const bool with_diag_filter = (config.hamming_ext || config.diag_filter_cov.present() || config.diag_filter_id.present()) && !config.mutual_cover.present() && align_mode.query_contexts == 1;
+	MEM_SCOPE("extend/ungapped-chaining");
 	WorkTarget target(block_id, masking ? ref_seqs[block_id] : ref_seqs_unmasked[block_id], query, max_target_len, stats, pool);
 	
 	if (mode == Mode::FULL) {
@@ -83,35 +88,21 @@ WorkTarget ungapped_stage(FlatArray<SeedHit>::DataIterator begin, FlatArray<Seed
 		return target;
 	}
 
-	//std::cout << query.title << ' ' << targets.ids()[block_id] << std::endl;
-
 	vector<SeedHit> reseek_hits;
 	if (reseek) {
+		MEM_SCOPE("extend/reseek-diags");
 		reseek_hits = reseek_diags(query, target.seq, cfg.hamming_filter_id);
 		stats.inc(Statistics::RESEEKED_DIAGONALS, reseek_hits.size());
 		reseek_hits.insert(reseek_hits.end(), begin, end);
 		begin = reseek_hits.begin();
 		end = reseek_hits.end();
 	}
-	/*std::sort(reseek_hits.begin(), reseek_hits.end());
-	for (auto hit = reseek_hits.begin(); hit != reseek_hits.end(); ++hit) {
-		if (!diagonal_segments[0].empty() && diagonal_segments[0].back().diag() == hit->diag() && diagonal_segments[0].back().subject_end() >= hit->j)
-			continue;
-		//stats.inc(Statistics::ADJACENCY_FILTERED_SEED_HITS);
-		const DiagonalSegment d = xdrop_ungapped(query.sequence[0], query.composition_bias(0), target.seq, hit->i, hit->j, with_diag_filter);
-		std::cout << "Reseek " << hit->i << " " << hit->j << " " << d.diag() << " " << d.score << std::endl;
-		if (d.score > 0)
-			diagonal_segments[0].push_back(d);
-	}
-	diagonal_segments[0].clear();*/
 	std::sort(begin, end);
-	//std::cout << "Ungapped stage: " << end - begin << " hits, target length: " << target.seq.length() << std::endl;
 	for (FlatArray<SeedHit>::DataIterator hit = begin; hit < end; ++hit) {
 		const auto f = hit->frame;
 		target.ungapped_score[f] = std::max(target.ungapped_score[f], hit->score);
 		if (!diagonal_segments[f].empty() && diagonal_segments[f].back().diag() == hit->diag() && diagonal_segments[f].back().subject_end() >= hit->j)
 			continue;
-		//std::cout << hit->i << " " << hit->j << std::endl;
 		stats.inc(Statistics::ADJACENCY_FILTERED_SEED_HITS);
 		const DiagonalSegment d = xdrop_ungapped(query.sequence[f], query.composition_bias(f), target.seq, hit->i, hit->j, reseek ? config.reseek_raw_ungapped_xdrop : config.raw_ungapped_xdrop, with_diag_filter);
 		if (d.score >= (reseek ? query.ungapped_cutoff : 1)) {
@@ -146,7 +137,9 @@ WorkTarget ungapped_stage(FlatArray<SeedHit>::DataIterator begin, FlatArray<Seed
 	return target;
 }
 
-void ungapped_stage_worker(size_t i, size_t thread_id, const Query* query, FlatArray<SeedHit>::Iterator seed_hits, vector<uint32_t>::const_iterator target_block_ids, Loc max_target_len, vector<WorkTarget> *out, mutex *mtx, Statistics* stat, const Block* targets, const Mode mode, std::pmr::monotonic_buffer_resource* pool, const Search::Config *cfg) {
+void ungapped_stage_worker(size_t i, size_t thread_id, const Query* query, FlatArray<SeedHit>::Iterator seed_hits, vector<uint32_t>::const_iterator target_block_ids,
+	Loc max_target_len, vector<WorkTarget> *out, mutex *mtx, Statistics* stat, const Block* targets, const Mode mode, std::pmr::memory_resource* pool, const Search::Config *cfg) {
+	MEM_SCOPE("extend/work-targets");
 	Statistics stats;
 	WorkTarget target = ungapped_stage(seed_hits.begin(i), seed_hits.end(i), *query, target_block_ids[i], max_target_len, stats, *targets, mode, *pool, *cfg);
 	{
@@ -156,7 +149,10 @@ void ungapped_stage_worker(size_t i, size_t thread_id, const Query* query, FlatA
 	}
 }
 
-vector<WorkTarget> ungapped_stage(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end, vector<uint32_t>::const_iterator target_block_ids, DP::Flags flags, Statistics& stat, const Block& target_block, const Mode mode, std::pmr::monotonic_buffer_resource& pool, const Search::Config &cfg) {
+vector<WorkTarget> ungapped_stage(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end,
+	vector<uint32_t>::const_iterator target_block_ids, DP::Flags flags, Statistics& stat, const Block& target_block, const Mode mode,
+	std::pmr::memory_resource& pool, const Search::Config &cfg) {
+	MEM_SCOPE("extend/work-targets");
 	vector<WorkTarget> targets;
 	const int64_t n = seed_hits_end - seed_hits;
 	if(n == 0)
@@ -169,13 +165,11 @@ vector<WorkTarget> ungapped_stage(const Query& query, FlatArray<SeedHit>::Iterat
 	targets.reserve(n);
 	if (flag_any(flags, DP::Flags::PARALLEL)) {
 		mutex mtx;
-		Util::Parallel::scheduled_thread_pool_auto(config.threads_, n, ungapped_stage_worker, &query, seed_hits, target_block_ids, max_target_len, &targets, &mtx, &stat, &target_block, mode, &pool, &cfg);
+		std::pmr::memory_resource* const worker_pool = std::pmr::get_default_resource();
+		Util::Parallel::scheduled_thread_pool_auto(config.threads_, n, ungapped_stage_worker, &query, seed_hits, target_block_ids, max_target_len, &targets, &mtx, &stat, &target_block, mode, worker_pool, &cfg);
 	}
 	else {
 		for (int64_t i = 0; i < n; ++i) {
-			/*const double len_ratio = query.sequence[0].length_ratio(target_block.seqs()[target_block_ids[i]]);
-			if (len_ratio < config.min_length_ratio)
-				continue;*/
 			targets.push_back(ungapped_stage(seed_hits.begin(i), seed_hits.end(i), query, target_block_ids[i], max_target_len, stat, target_block, mode, pool, cfg));
 			for (const ApproxHsp& hsp : targets.back().hsp[0]) {
 				Geo::assert_diag_bounds(hsp.d_max, query.sequence[0].length(), targets.back().seq.length());

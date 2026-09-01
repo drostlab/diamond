@@ -148,14 +148,14 @@ struct OutputFormat
 	enum { daa, blast_tab, blast_xml, sam, blast_pairwise, null, taxon, paf, bin1, EDGE, json };
 };
 
-struct Null_format : public OutputFormat
+struct NullFormat : public OutputFormat
 {
-	Null_format() :
+	NullFormat() :
 		OutputFormat(null)
 	{}
 	virtual OutputFormat* clone() const
 	{
-		return new Null_format(*this);
+		return new NullFormat(*this);
 	}
 };
 

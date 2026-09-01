@@ -70,7 +70,9 @@ struct Matrix
 		inline void set_zero() {}
 		ScoreVector*hgap_ptr_, *score_ptr_;
 	};
-	Matrix(int band, size_t cols, ScoreVector init = ScoreVector()) :
+	Matrix(int band, size_t cols, std::pmr::memory_resource* pool = nullptr, ScoreVector init = ScoreVector()) :
+		hgap_(pool),
+		score_(pool),
 		band_(band)
 	{
 		hgap_.resize(band + 1);
@@ -128,26 +130,22 @@ struct Matrix
 	ScoreVector operator[](int i) const {
 		return score_[i];
 	}
-#if defined(__APPLE__) || !defined(USE_TLS)
 	MemBuffer<ScoreVector> hgap_, score_;
-#else
-	static thread_local MemBuffer<ScoreVector> hgap_, score_;
-#endif
 private:
 	int band_;	
 };
 
-template<typename _sv>
+template<typename Sv>
 struct TracebackMatrix
 {
 
 	typedef void* Stat;
-	typedef typename ::DISPATCH_ARCH::ScoreTraits<_sv>::Score Score;
-	static constexpr int CHANNELS = ::DISPATCH_ARCH::ScoreTraits<_sv>::CHANNELS;
+	typedef typename ::DISPATCH_ARCH::ScoreTraits<Sv>::Score Score;
+	static constexpr int CHANNELS = ::DISPATCH_ARCH::ScoreTraits<Sv>::CHANNELS;
 
 	struct ColumnIterator
 	{
-		ColumnIterator(_sv* hgap_front, _sv* score_front, _sv* score_front1) :
+		ColumnIterator(Sv* hgap_front, Sv* score_front, Sv* score_front1) :
 			hgap_ptr_(hgap_front),
 			score_ptr_(score_front),
 			score_ptr1_(score_front1)
@@ -156,25 +154,25 @@ struct TracebackMatrix
 		{
 			++hgap_ptr_; ++score_ptr_; ++score_ptr1_;
 		}
-		inline _sv hgap() const
+		inline Sv hgap() const
 		{
 			return *(hgap_ptr_ + 1);
 		}
-		inline _sv diag() const
+		inline Sv diag() const
 		{
 			return *score_ptr_;
 		}
-		inline void set_hgap(const _sv& x)
+		inline void set_hgap(const Sv& x)
 		{
 			*hgap_ptr_ = x;
 		}
-		inline void set_score(const _sv& x)
+		inline void set_score(const Sv& x)
 		{
 			*score_ptr1_ = x;
 		}
 		void set_zero()
 		{
-			*(score_ptr1_ - 1) = _sv();
+			*(score_ptr1_ - 1) = Sv();
 		}
 		std::nullptr_t stat() {
 			return nullptr;
@@ -186,7 +184,7 @@ struct TracebackMatrix
 			return nullptr;
 		}
 		void set_hstat(std::nullptr_t) {}
-		_sv *hgap_ptr_, *score_ptr_, *score_ptr1_;
+		Sv *hgap_ptr_, *score_ptr_, *score_ptr1_;
 	};
 
 	struct TracebackIterator
@@ -209,7 +207,7 @@ struct TracebackMatrix
 		}
 		void walk_diagonal()
 		{
-			score_ -= band_ * ::DISPATCH_ARCH::ScoreTraits<_sv>::CHANNELS;
+			score_ -= band_ * ::DISPATCH_ARCH::ScoreTraits<Sv>::CHANNELS;
 			--i;
 			--j;
 			assert(i >= -1 && j >= -1);
@@ -284,13 +282,15 @@ struct TracebackMatrix
 		throw std::runtime_error("Trackback error.");
 	}
 
-	TracebackMatrix(size_t band, size_t cols) :
+	TracebackMatrix(size_t band, size_t cols, std::pmr::memory_resource* pool = nullptr) :
+		hgap_(pool),
+		score_(pool),
 		band_(band)
 	{
 		hgap_.resize(band + 1);
 		score_.resize(band * (cols + 1));
-		std::fill(hgap_.begin(), hgap_.end(), _sv());
-		std::fill(score_.begin(), score_.begin() + band, _sv());
+		std::fill(hgap_.begin(), hgap_.end(), Sv());
+		std::fill(score_.begin(), score_.begin() + band, Sv());
 	}
 
 	inline ColumnIterator begin(size_t offset, size_t col)
@@ -298,11 +298,11 @@ struct TracebackMatrix
 		return ColumnIterator(&hgap_[offset], &score_[col*band_ + offset], &score_[(col + 1)*band_ + offset]);
 	}
 
-	_sv operator[](int i) const {
-		return _sv();
+	Sv operator[](int i) const {
+		return Sv();
 	}
 
-	MemBuffer<_sv> hgap_, score_;
+	MemBuffer<Sv> hgap_, score_;
 
 private:
 
@@ -411,7 +411,10 @@ struct TracebackVectorMatrix
 		return TracebackIterator(&trace_mask_[col*band_ + band_i], band_, i0 + band_i, j, channel);
 	}
 
-	TracebackVectorMatrix(int band, size_t cols) :
+	TracebackVectorMatrix(int band, size_t cols, std::pmr::memory_resource* pool = nullptr) :
+		hgap_(pool),
+		score_(pool),
+		trace_mask_(pool),
 		band_(band)
 	{
 		hgap_.resize(band + 1);
@@ -434,22 +437,11 @@ struct TracebackVectorMatrix
 		return Sv();
 	}
 
-#if defined(__APPLE__) || !defined(USE_TLS)
 	MemBuffer<Sv> hgap_, score_;
-#else
-	static thread_local MemBuffer<_sv> hgap_, score_;
-#endif
 	MemBuffer<TraceMask> trace_mask_;
 private:
 	int band_;
 };
-
-#if !defined(__APPLE__) && defined(USE_TLS)
-template<typename Sv> thread_local MemBuffer<Sv> Matrix<Sv>::hgap_;
-template<typename Sv> thread_local MemBuffer<Sv> Matrix<Sv>::score_;
-template<typename Sv> thread_local MemBuffer<Sv> TracebackVectorMatrix<Sv>::hgap_;
-template<typename Sv> thread_local MemBuffer<Sv> TracebackVectorMatrix<Sv>::score_;
-#endif
 
 template<typename Sv, bool Traceback>
 struct SelectMatrix {

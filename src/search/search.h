@@ -73,6 +73,11 @@ struct Context {
 
 extern Reduction steinegger12;
 extern Reduction murphy10;
+extern Reduction diamond9;
+extern Reduction diamond10;
+extern Reduction diamond14;
+extern Reduction diamond17;
+extern Reduction diamond18;
 extern Reduction no_reduction;
 extern Reduction dna;
 extern const std::map<Sensitivity, SensitivityTraits> sensitivity_traits;

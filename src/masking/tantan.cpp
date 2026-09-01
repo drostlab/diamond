@@ -25,79 +25,12 @@ A new repeat-masking method enables specific detection of homologous sequences, 
 #include "../basic/value.h"
 #include "def.h"
 #include "../util/simd/dispatch.h"
-#include "util/simd/vector.h"
+#include "tantan_step.h"
 #include "masking.h"
 
 using std::fill;
 
 namespace Util { namespace tantan { namespace DISPATCH_ARCH {
-
-static inline float forward_step(
-    float* __restrict f, const float* __restrict d, const float* __restrict e_seg,
-    float& b, float f2f, float p_repeat_end, float b2b, float f_sum_prev)
-{
-	using namespace ::DISPATCH_ARCH::SIMD;
-	using Register = Traits<float>::Register;
-	constexpr size_t L = Traits<float>::LANES;
-    const float b_old = b;
-    const Register vf2f   = set(f2f, Register());
-    const Register vb_old = set(b_old, Register());
-
-    float f_sum_new = 0.0f;
-
-    for (int off = 0; off < 48; off += L) {
-        Register vf = load(f + off, Register());
-        const Register vd = load(d + off, Register());
-        const Register ve = unaligned_load(e_seg + off, Register());
-		Register tmp = fmadd(vf, vf2f, mul(vb_old, vd));
-		vf = mul(tmp, ve);
-		store(vf, f + off);
-		f_sum_new += hsum(vf);
-    }
-    for (int off = 48; off < 50; ++off) {
-        float vf = f[off];
-        vf = (vf * f2f + b_old * d[off]) * e_seg[off];
-        f[off] = vf;
-        f_sum_new += vf;
-    }
-
-    b = b_old * b2b + f_sum_prev * p_repeat_end;
-    return f_sum_new;
-}
-
-static inline float backward_step(
-	float* __restrict f, const float* __restrict d, const float* __restrict e_seg,
-	float& b, float f2f, float p_repeat_end, float b2b)
-{
-	using namespace ::DISPATCH_ARCH::SIMD;
-	using Register = Traits<float>::Register;
-	constexpr size_t L = Traits<float>::LANES;
-	const Register vf2f = set(f2f, Register());
-	const Register vC = set(p_repeat_end * b, Register());
-
-	float tsum = 0.0f;
-
-	for (int off = 0; off < 48; off += L) {
-		Register vf = load(f + off, Register());
-		const Register ve = unaligned_load(e_seg + off, Register());
-		const Register vd = load(d + off, Register());
-		vf = mul(vf, ve);
-		Register vt = mul(vf, vd);
-		vf = fmadd(vf, vf2f, vC);
-		store(vf, f + off);
-		tsum += hsum(vt);
-	}
-
-	for (int off = 48; off < 50; ++off) {
-		float vf = f[off] * e_seg[off];
-		tsum += vf * d[off];
-		vf = vf * f2f + p_repeat_end * b;
-		f[off] = vf;
-	}
-
-	b = b2b * b + tsum;
-	return tsum;
-}
 
 Mask::Ranges mask(
 	Letter *seq,
@@ -109,14 +42,13 @@ Mask::Ranges mask(
 	float p_mask,
 	int mask_mode)
 {
-	constexpr int WINDOW  = 50;
 	constexpr int RESERVE = 50000;
 
 	Mask::Ranges ranges;
 	if (len == 0) return ranges;
 
-	alignas(32) float f[WINDOW];
-	alignas(32) float d[WINDOW];
+	alignas(WINDOW_ALIGN) float f[WINDOW];
+	alignas(WINDOW_ALIGN) float d[WINDOW];
 
 	const float b2b  = 1.0f - p_repeat;
 	const float f2f  = 1.0f - p_repeat_end;
@@ -164,13 +96,13 @@ Mask::Ranges mask(
 			const float s = 1.0f / b;
 			scale[(size_t)i / 16] = s;
 			b *= s;
-			::DISPATCH_ARCH::SIMD::scale(f, s, WINDOW);
+			scale_window(f, s);
 			f_sum *= s;
 		}
 		pb[i] = b;
 	}
 
-	const float z = b * b2b + ::DISPATCH_ARCH::SIMD::sum(f, WINDOW) * p_repeat_end;
+	const float z = b * b2b + sum_window(f) * p_repeat_end;
 	const float zinv = 1.0f / z;
 
 	b = b2b;
@@ -183,7 +115,7 @@ Mask::Ranges mask(
 		if ((i & 15) == 15) {
 			const float s = scale[(size_t)i / 16];
 			b *= s;
-			::DISPATCH_ARCH::SIMD::scale(f, s, WINDOW);
+			scale_window(f, s);
 		}
 
 		const uint8_t ltr = static_cast<uint8_t>(letter_mask(seq[i]));

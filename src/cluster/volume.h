@@ -55,14 +55,19 @@ struct Volume {
 	}
 	friend std::istream& operator>>(std::istream& str, Volume& v) {
 		std::string line;
+		std::istringstream row;
 		v.oid_begin = v.oid_end = 0;
-		if (!std::getline(str, line)) return str;
-		std::istringstream row(line);
-		row >> v.path;
-		if (!row)
-			throw std::runtime_error("Format error in VolumedFile");
-		row >> v.record_count;
-		row >> v.oid_begin >> v.oid_end;
+		v.record_count = std::numeric_limits<OId>::max();
+		do {
+			if (!std::getline(str, line)) return str;
+			row.clear();
+			row.str(line);
+		} while (!(row >> v.path));
+		OId record_count;
+		if (row >> record_count) {
+			v.record_count = record_count;
+			row >> v.oid_begin >> v.oid_end;
+		}
 		return str;
 	}
 };
@@ -80,34 +85,41 @@ struct VolumedFile : public std::vector<Volume> {
 	{
 		std::ifstream volume_file(file_name);
 		if (!volume_file)
-			throw std::runtime_error("Error opening file " + file_name);
+			throw std::runtime_error("Error opening file " + file_name + ". " + file_open_error(file_name));
 		int64_t oid = 0;
 		Volume v;
+		bool have_counts = false, missing_counts = false;
 		while (volume_file) {
 			volume_file >> v;
 			if (!volume_file)
 				break;
-			if (v.oid_begin == 0 && v.oid_end == 0) {
-				v.oid_begin = oid;
-				v.oid_end = oid + v.record_count;
-			}
-			push_back(v);
-			oid += v.record_count;
-			if (v.record_count == std::numeric_limits<OId>::max()) {
-				if (records_ != std::numeric_limits<OId>::max())
-					throw std::runtime_error("Inconsistent record count");
-			}
-			else {
+			const bool count_known = v.record_count != std::numeric_limits<OId>::max();
+			if (count_known)
+				have_counts = true;
+			else
+				missing_counts = true;
+			if (have_counts && missing_counts)
+				throw std::runtime_error("Record counts must be given either for all or for none of the volumes in " + file_name);
+			if (count_known) {
+				if (v.oid_begin == 0 && v.oid_end == 0) {
+					v.oid_begin = oid;
+					v.oid_end = oid + v.record_count;
+				}
+				oid += v.record_count;
 				if (records_ == std::numeric_limits<OId>::max())
 					records_ = 0;
 				records_ += v.record_count;
 			}
+			push_back(v);
 			if (v.oid_end > 0)
 				max_oid_ = max_oid_ != std::numeric_limits<OId>::max() ? std::max(max_oid_, v.oid_end - 1) : v.oid_end - 1;
 		}
-		std::sort(begin(), end());
+		std::stable_sort(begin(), end());
 		if (empty())
 			records_ = 0;
+	}
+	bool have_record_counts() const {
+		return records_ != std::numeric_limits<OId>::max();
 	}
 	OId sparse_records() const {
 		if (records_ == std::numeric_limits<OId>::max())
@@ -144,7 +156,10 @@ struct VolumedFile : public std::vector<Volume> {
 		if (list_file)
 			remove_tmp_file(list_file_);
 		if (dir)
-			rmdir(containing_directory(list_file_).c_str());
+			rmdir(this->dir().c_str());
+	}
+	std::string dir() const {
+		return containing_directory(list_file_);
 	}
 	void set_letter_count(uint64_t count) {
 		letter_count_ = count;

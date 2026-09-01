@@ -18,12 +18,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <iostream>
+#include <malloc.h>
 #include <memory>
 #include "basic/value.h"
 #include "align.h"
 #include "output/output_format.h"
 #include "output/output.h"
-#include "legacy/pipeline.h"
+#include "legacy/frameshift/pipeline.h"
 #include "search/hit_buffer.h"
 #include "util/parallel/thread_pool.h"
 #include "extend.h"
@@ -36,7 +37,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "ips4o/ips4o.hpp"
 #include "data/queries.h"
 #include "data/sequence_file.h"
+#include "util/system/system.h"
 #include "search/hit_buffer.h"
+#include "util/memory/mem_profile.h"
 
 using std::get;
 using std::tuple;
@@ -50,6 +53,7 @@ using std::vector;
 DpStat dp_stat;
 
 static vector<int64_t> make_partition(Search::Hit* begin, Search::Hit* end) {
+	MEM_SCOPE("align/query-partition");
 	vector<int64_t> partition;
 	partition.reserve(div_up(end - begin, (ptrdiff_t)config.min_task_trace_pts) + 1);
 	Search::Hit* p = begin;
@@ -157,15 +161,23 @@ static TextBuffer* legacy_pipeline(const HitIterator::Hits& hits, Search::Config
 static void align_worker(HitIterator* hit_it, Search::Config* cfg, int64_t next)
 {
 	try {
-		std::pmr::monotonic_buffer_resource pool;
-		const vector<HitIterator::Hits> hits = hit_it->fetch(next);
+		MEM_SCOPE("align/worker-misc");
+		//std::pmr::monotonic_buffer_resource pool; // TODO
+		std::pmr::unsynchronized_pool_resource pool(MEM_POOL("align/pmr-pool"));
+		std::pmr::memory_resource& mem = config.no_mem_pool ? *std::pmr::get_default_resource() : static_cast<std::pmr::memory_resource&>(pool);
+		vector<HitIterator::Hits> hits;
+		{
+			MEM_SCOPE("align/hit-iterator");
+			hits = hit_it->fetch(next);
+		}
 		assert(!hits.empty());
 		Statistics stat;
 		DpStat dp_stat;
 		const bool parallel = config.swipe_all && (cfg->target->seqs().size() >= cfg->query->seqs().size());
 
-		for (auto h = hits.cbegin(); h < hits.cend(); ++h) {			
-			pool.release();
+		for (auto h = hits.cbegin(); h < hits.cend(); ++h) {
+			if (!config.no_mem_pool)
+				pool.release();
 			if (config.frame_shift != 0) {
 				TextBuffer* buf = legacy_pipeline(*h, *cfg, stat);
 				output_sink->push(h->query, buf);
@@ -180,7 +192,7 @@ static void align_worker(HitIterator* hit_it, Search::Config* cfg, int64_t next)
 #ifdef WITH_DNA
 				align_mode.mode == AlignMode::blastn ? Dna::extend(*cfg, cfg->query->seqs()[h->query]) :
 #endif
-				Extension::extend(h->query, h->begin, h->end, *cfg, stat, parallel ? DP::Flags::PARALLEL : DP::Flags::NONE, pool);
+				Extension::extend(h->query, h->begin, h->end, *cfg, stat, parallel ? DP::Flags::PARALLEL : DP::Flags::NONE, mem);
 			TextBuffer* buf = cfg->blocked_processing ? Extension::generate_intermediate_output(matches, h->query, *cfg) : Extension::generate_output(matches, h->query, stat, *cfg);
 			if (!matches.empty() && cfg->track_aligned_queries) {
 				std::lock_guard<std::mutex> lock(query_aligned_mtx);
@@ -203,38 +215,47 @@ static void align_worker(HitIterator* hit_it, Search::Config* cfg, int64_t next)
 
 void align_queries(File* output_file, Search::Config& cfg)
 {
+	MEM_SCOPE("align/main-thread");	
+	MemProfile::reset_peaks();
 	const uint64_t mem_limit = Util::String::interpret_number(config.memory_limit.get("16G"));
 
 	pair<BlockId, BlockId> query_range;
 	TaskTimer timer("Allocating memory", 3);
 
+#ifndef _MSC_VER
+	malloc_trim(0);
+#endif
 	if (!cfg.blocked_processing && !cfg.iterated())
 		cfg.db->init_random_access(cfg.current_query_block, 0, false);
 
-	uint64_t res_size = cfg.query->mem_size() + cfg.target->mem_size();
+	const uint64_t res_size = cfg.query->mem_size() + cfg.target->mem_size();
+	const uint64_t avail = mem_limit > res_size ? mem_limit - res_size : 0;
+	cfg.seed_hit_buf->plan_bin_groups(std::min<uint64_t>(avail / 2, config.trace_pt_fetch_size));
 	cfg.seed_hit_buf->alloc_buffer();
-	cfg.seed_hit_buf->load(std::min(mem_limit - res_size - cfg.seed_hit_buf->next_bin_size() * (uint64_t)sizeof(Search::Hit), config.trace_pt_fetch_size));
+	cfg.seed_hit_buf->load();
 	bool goon = true;
 
 	while (goon) {
+		log_rss();
 		timer.go("Loading trace points");
 		tuple<Search::Hit*, int64_t, BlockId, BlockId> input = cfg.seed_hit_buf->retrieve();
 		statistics.inc(Statistics::TIME_LOAD_SEED_HITS, timer.microseconds());
-		goon = cfg.seed_hit_buf->load(std::min(mem_limit - res_size - cfg.seed_hit_buf->next_bin_size() * (int64_t)sizeof(Search::Hit), config.trace_pt_fetch_size));
+		goon = cfg.seed_hit_buf->load();
 		timer.finish();
 		Search::Hit* hit_buf = get<0>(input);
 		const int64_t hit_count = get<1>(input);
 		*log_stream << "Processing " << hit_count << " trace points (" << Util::String::format(int64_t(hit_count * sizeof(Search::Hit))) << ")." << std::endl;
-		res_size += hit_count * sizeof(Search::Hit);
 		query_range = { get<2>(input), get<3>(input) };
 
 		timer.go("Sorting trace points");
+		{
+			MEM_SCOPE("align/sort-trace-points");
 #ifdef NDEBUG
-		//sort::sort_parallel_blocked_inplace(hit_buf, hit_buf + hit_count, std::less<Search::Hit>(), config.threads_);
-		ips4o::parallel::sort(hit_buf, hit_buf + hit_count, std::less<Search::Hit>(), config.threads_);
+			ips4o::parallel::sort(hit_buf, hit_buf + hit_count, std::less<Search::Hit>(), config.threads_);
 #else
-		std::sort(hit_buf, hit_buf + hit_count);
+			std::sort(hit_buf, hit_buf + hit_count);
 #endif
+		}
 		statistics.inc(Statistics::TIME_SORT_SEED_HITS, timer.microseconds());
 
 		timer.go("Computing partition");
@@ -243,14 +264,20 @@ void align_queries(File* output_file, Search::Config& cfg)
 		timer.go("Computing alignments");
 		HitIterator hit_it(query_range.first, query_range.second, hit_buf, hit_buf + hit_count, partition.begin(), (int64_t)partition.size() - 1);
         OutputWriter writer{output_file, cfg.blocked_processing ? '\0' : cfg.output_format->query_separator };
-		output_sink.reset(new ReorderQueue<TextBuffer*, OutputWriter>(query_range.first, writer));
+		{
+			MEM_SCOPE("output/reorder-queue");
+			output_sink.reset(new ReorderQueue<TextBuffer*, OutputWriter>(query_range.first, writer, !config.no_reorder));
+		}
 		unique_ptr<thread> heartbeat;
 		if (config.verbosity >= 3 && config.load_balancing == Config::query_parallel && !config.swipe_all && config.heartbeat)
 			heartbeat.reset(new thread(heartbeat_worker, query_range.second, &cfg));
 		const int threads = config.load_balancing == Config::target_parallel || (config.swipe_all && (cfg.target->seqs().size() >= cfg.query->seqs().size())) ? 1
 			: (config.threads_align == 0 ? config.threads_ : config.threads_align);
 		auto task = [&hit_it, &cfg](ThreadPool& tp, int64_t i) { return align_worker(&hit_it, &cfg, i); };
-		cfg.thread_pool.reset(config.swipe_all ? new ThreadPool(task, query_range.first, query_range.second) : new ThreadPool(task, 0, (int64_t)partition.size() - 1));
+		{
+			MEM_SCOPE("align/thread-pool");
+			cfg.thread_pool.reset(config.swipe_all ? new ThreadPool(task, query_range.first, query_range.second) : new ThreadPool(task, 0, (int64_t)partition.size() - 1));
+		}
 		cfg.thread_pool->run(threads);
 		cfg.thread_pool->join();
 		if (heartbeat)
@@ -260,6 +287,9 @@ void align_queries(File* output_file, Search::Config& cfg)
 		timer.go("Deallocating buffers");
 		cfg.thread_pool.reset();
 		output_sink.reset();
+#ifndef _MSC_VER
+		malloc_trim(0);
+#endif
 	}
 	statistics.max(Statistics::SEARCH_TEMP_SPACE, cfg.seed_hit_buf->total_disk_size());
 
@@ -267,4 +297,7 @@ void align_queries(File* output_file, Search::Config& cfg)
 	cfg.seed_hit_buf->free_buffer();
 	if (!cfg.blocked_processing && !cfg.iterated())
 		cfg.db->end_random_access(false);
+	timer.finish();
+
+	MemProfile::report(std::cerr, "align_queries");
 }

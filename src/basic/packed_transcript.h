@@ -51,7 +51,7 @@ struct PackedOperation
 			switch (letter()) {
 			case (Letter)AMINO_ACID_COUNT:
 				return op_frameshift_reverse;
-			case (Letter)(AMINO_ACID_COUNT + 1) :
+			case (Letter)(AMINO_ACID_COUNT + 1):
 				return op_frameshift_forward;
 			default:
 				return op_substitution;

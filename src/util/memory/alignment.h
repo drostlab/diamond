@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 #include <exception>
+#include "mem_profile.h"
 
 namespace Util { namespace Memory {
 
@@ -27,16 +28,19 @@ static inline void* aligned_malloc(size_t n, size_t align) {
     void* p = _aligned_malloc(n, align);
     if (p == nullptr)
         throw std::bad_alloc();
+    MEM_TRACK(p, n);
     return p;
 #else
     void* p;
     if (posix_memalign(&p, align, n) != 0)
         throw std::bad_alloc();
+    MEM_TRACK(p, n);
     return p;
 #endif
 }
 
 static inline void aligned_free(void* p) {
+    MEM_UNTRACK(p);
 #ifdef WIN32
     _aligned_free(p);
 #else

@@ -111,7 +111,7 @@ EMatrixAdjustRule adjust_matrix(const Composition& query_comp, int query_len, un
         return eUserSpecifiedRelEntropy;
 }
 
-TargetMatrix::TargetMatrix(const Composition& query_comp, int query_len, unsigned cbs, const Sequence& target, Statistics& stats, std::pmr::monotonic_buffer_resource& pool, EMatrixAdjustRule rule) :
+TargetMatrix::TargetMatrix(const Composition& query_comp, int query_len, unsigned cbs, const Sequence& target, Statistics& stats, std::pmr::memory_resource& pool, EMatrixAdjustRule rule) :
     scores(&pool)
 {
     TaskTimer timer;

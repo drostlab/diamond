@@ -68,11 +68,3 @@ void run_stage1(JoinIterator<PackedLocId>& it, Search::WorkSet* work_set, const 
 }
 
 }}
-
-/*namespace Search {
-	
-DISPATCH_3V(run_stage1, JoinIterator<PackedLoc>&, it, Search::WorkSet*, work_set, const Search::Config*, cfg)
-DISPATCH_3V(run_stage1, JoinIterator<PackedLocId>&, it, Search::WorkSet*, work_set, const Search::Config*, cfg)
-DISPATCH_1(bool, keep_target_id, const Search::Config&, cfg)
-
-}*/

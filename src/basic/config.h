@@ -26,7 +26,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/io/decompressor.h"
 #include "util/enum.h"
 
-enum class Sensitivity { FASTER = -1, FAST = 0, DEFAULT = 1, LINCLUST_40 = 2, LINCLUST_20 = 3, SHAPES6x10 = 4, SHAPES30x10 = 5, MID_SENSITIVE = 6, SENSITIVE = 7, MORE_SENSITIVE = 8, VERY_SENSITIVE = 9, ULTRA_SENSITIVE = 10 };
+enum class Sensitivity { FASTER = -1, FAST = 0, DEFAULT = 1, LINCLUST_40 = 2, LINCLUST_20 = 3, SHAPES6x10 = 4, SHAPES30x10 = 5, MID_SENSITIVE = 6, SENSITIVE = 7,
+	MORE_SENSITIVE = 8, VERY_SENSITIVE = 9, ULTRA_SENSITIVE = 10 };
 
 template<> struct EnumTraits<Sensitivity> {
 	static const EMap<Sensitivity> to_string;
@@ -281,7 +282,6 @@ struct Config
 	bool lin_stage1_query;
 	bool lin_stage1_target;
 	string lin_index_file;
-	bool seed_index;
 	int64_t min_task_trace_pts;
 	Loc sketch_size;
 	string soft_masking;
@@ -365,7 +365,6 @@ struct Config
 	std::string aln_out;
 	Option<int64_t> composition_matrix_sample_size;
 	std::string reps_out;
-	bool hamming_dist_boundary_check;
 	bool keep_temp_files;
 	std::string fasta_index_file;
 	int daa_build_version;
@@ -373,11 +372,20 @@ struct Config
 	bool symmetrize_evalue;
 	std::string taxdump;
 	bool fpu_compat;
+	bool no_mem_pool;
 	bool single_step;
 	bool reseek_diags;
 	double word_threshold;
 	int double_hit_window;
 	uint64_t oid_title_max;
+	string linclust_minichunk;
+
+	// TODO
+	double cbs_angle;
+	string algo_str;
+	double rank_ratio2, lambda, K;
+	unsigned window, min_ungapped_score, hit_band, min_hit_score;
+	bool verbose;
 
     SequenceType dbtype;
 
@@ -394,7 +402,7 @@ struct Config
 		smith_waterman = 26, cluster = 27, simulate_seqs = 31, split = 32, upgma = 33, upgma_mc = 34, regression_test = 35,
 		reverse_seqs = 36, compute_medoids = 37, mutate = 38, rocid = 40, makeidx = 41, find_shapes, prep_db, HASH_SEQS, LIST_SEEDS, CLUSTER_REALIGN,
 		GREEDY_VERTEX_COVER, CLUSTER_REASSIGN, blastn, RECLUSTER, MERGE_DAA, DEEPCLUST, LINCLUST, WORD_COUNT, CUT, MODEL_SEQS,
-		MAKE_SEED_TABLE, COMPOSITION_MATRIX
+		MAKE_SEED_TABLE, COMPOSITION_MATRIX, COUNT_DISTINCT
 	};
 
 	unsigned command;
@@ -474,4 +482,4 @@ template<> struct EnumTraits<Config::Algo> {
 
 extern const char* const DEFAULT_MEMORY_LIMIT;
 
-std::pair<double, int> block_size(int64_t memory_limit, int64_t db_letters, Sensitivity s, bool lin, int thread_count);
+std::pair<double, int> block_size(int64_t memory_limit, int64_t db_letters, Sensitivity s, bool lin, int thread_count, bool mutual_cov);

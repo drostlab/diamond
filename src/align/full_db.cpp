@@ -27,9 +27,9 @@ using std::vector;
 
 namespace Extension {
 
-vector<Target> full_db_align(const Query& query, DP::Flags flags, const HspValues hsp_values, Statistics& stat, const Block& target_block) {
+TargetList full_db_align(const Query& query, DP::Flags flags, const HspValues hsp_values, Statistics& stat, const Block& target_block, std::pmr::memory_resource& pool) {
 	vector<DpTarget> v;
-	vector<Target> r;
+	TargetList r(&pool);
 	list<Hsp> hsp;
 	const SequenceSet& ref_seqs = target_block.seqs();
 
@@ -46,7 +46,8 @@ vector<Target> full_db_align(const Query& query, DP::Flags flags, const HspValue
 			-1,
 			hsp_values,
 			stat,
-			nullptr
+			nullptr,
+			&pool
 		};
 		list<Hsp> frame_hsp = DP::BandedSwipe::swipe_set(ref_seqs.cbegin(), ref_seqs.cend(), params);
 		hsp.splice(hsp.begin(), frame_hsp, frame_hsp.begin(), frame_hsp.end());

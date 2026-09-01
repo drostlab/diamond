@@ -94,7 +94,8 @@ const SEMap<SequenceType> EnumTraits<SequenceType>::from_string = { {"prot",Sequ
 
 Config config;
 
-pair<double, int> block_size(int64_t memory_limit, int64_t db_letters, Sensitivity s, bool lin, int thread_count) {
+pair<double, int> block_size(int64_t memory_limit, int64_t db_letters, Sensitivity s, bool lin, int thread_count, bool mutual_cov) {
+	const double MIN_BLOCK_SIZE = 0.001;
 	const double AVG_SEQ_LENGTH_EST = 200;
 	const double m = (double)memory_limit / 1e9;
 	const int min = Search::sensitivity_traits.at(s).minimizer_window,
@@ -106,6 +107,9 @@ pair<double, int> block_size(int64_t memory_limit, int64_t db_letters, Sensitivi
 	assert(min == 0 || sketch_size == 0);
 	int c = 0;
 	double b;
+	if (lin && !mutual_cov) {
+		return { std::max(m / 10.0, MIN_BLOCK_SIZE),1 };
+	}
 	do {
 		++c;
 		double seeds_per_letter = (sketch_size > 0 ? 1 / AVG_SEQ_LENGTH_EST * sketch_size : 1.0) / c;
@@ -123,7 +127,7 @@ pair<double, int> block_size(int64_t memory_limit, int64_t db_letters, Sensitivi
 		b = floor(b * 1000) / 1000;*/
 	if (!config.no_block_size_limit)
 		b = std::min(b, max_b);
-	return { std::max(b, 0.001), c };
+	return { std::max(b, MIN_BLOCK_SIZE), c };
 }
 
 template<typename T>
@@ -160,10 +164,6 @@ CompressionLib Config::compressor() const
 
 Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& parser)
 {
-	double query_match_distance_threshold;
-	double length_ratio_threshold;
-	double cbs_angle;
-
 	parser.add_command("makedb", "Build DIAMOND database from a FASTA file", makedb)
 		.add_command("prepdb", "", prep_db)
 		.add_command("blastp", "Align amino acid query sequences against a protein reference database", blastp)
@@ -186,6 +186,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		.add_command("roc", "", roc)
 		.add_command("benchmark", "", benchmark)
 		.add_command("deepclust", "", DEEPCLUST)
+		.add_command("countdistinct", "Count distinct sequences in a FASTA file", COUNT_DISTINCT)
 #ifdef EXTRA
 		.add_command("random-seqs", "", random_seqs)
 		.add_command("sort", "", sort)
@@ -214,7 +215,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 #endif
 		;
 
-	auto& general = parser.add_group("General options", { makedb, blastp, blastx, cluster, view, getseq, dbinfo, makeidx, CLUSTER_REALIGN, GREEDY_VERTEX_COVER, DEEPCLUST, RECLUSTER, MERGE_DAA, LINCLUST, CLUSTER_REASSIGN, COMPOSITION_MATRIX });
+	auto& general = parser.add_group("General options", { makedb, blastp, blastx, cluster, view, getseq, dbinfo, makeidx, CLUSTER_REALIGN, GREEDY_VERTEX_COVER, DEEPCLUST, RECLUSTER, MERGE_DAA, LINCLUST, CLUSTER_REASSIGN, COMPOSITION_MATRIX, COUNT_DISTINCT });
 	general.add()
 		("threads", 'p', "number of CPU threads", threads_)
 		("log", 0, "enable debug log", debug_log)
@@ -226,7 +227,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 	general_db.add()
 		("db", 'd', "database file", database);
 
-	auto& general_out = parser.add_group("General/output", { blastp, blastx, cluster, view, getseq, CLUSTER_REALIGN, GREEDY_VERTEX_COVER, DEEPCLUST, RECLUSTER, MERGE_DAA, LINCLUST, CLUSTER_REASSIGN, COMPOSITION_MATRIX });
+	auto& general_out = parser.add_group("General/output", { blastp, blastx, cluster, view, getseq, CLUSTER_REALIGN, GREEDY_VERTEX_COVER, DEEPCLUST, RECLUSTER, MERGE_DAA, LINCLUST, CLUSTER_REASSIGN, COMPOSITION_MATRIX, COUNT_DISTINCT });
 	general_out.add()
 		("out", 'o', "output file", output_file);
 
@@ -235,7 +236,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("header", 0, "Use header lines in tabular output format (0/simple/verbose).", output_header, Option<vector<string>>(), 0);
 	
     string dbstring;
-	auto& makedb_opt = parser.add_group("Makedb options", { makedb, MERGE_DAA });
+	auto& makedb_opt = parser.add_group("Makedb options", { makedb, MERGE_DAA, COUNT_DISTINCT });
 	makedb_opt.add()
 		("in", 0, "input reference file in FASTA format/input DAA files for merge-daa", input_ref_file);
 
@@ -264,8 +265,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("approx-id", 0, "minimum approx. identity% to report an alignment/to cluster sequences", approx_min_id)
 		("id", 0, "minimum identity% to report an alignment", min_id)
 		("ext", 0, "Extension mode (banded-fast/banded-slow/full/global/none)", extension_mode)
-		("min-len-ratio", 0, "sequence length ratio cutoff for mutual coverage", min_length_ratio)
-		("hamming-dist-boundary-check", 0, "Clip hamming distance filter against sequence boundaries", hamming_dist_boundary_check);
+		("min-len-ratio", 0, "sequence length ratio cutoff for mutual coverage", min_length_ratio);
 
 	auto& aligner_view = parser.add_group("Aligner/view options", { blastp, blastx, view });
 	aligner_view.add()
@@ -352,7 +352,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("include-lineage", 0, "Include lineage in the taxonomic classification format", include_lineage);
 
 	auto& cluster_opt = parser.add_group("Clustering options", { cluster, RECLUSTER, DEEPCLUST, LINCLUST });
-	kmer_ranking = false;
+	
 	cluster_opt.add()
 		("cluster-steps", 0, "Clustering rounds for cascaded clustering", cluster_steps)
 		("kmer-ranking", 0, "Rank sequences based on kmer frequency in linear stage", kmer_ranking)
@@ -360,9 +360,10 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("round-approx-id", 0, "Per-round approx-id cutoffs for cascaded clustering", round_approx_id)
 		("aln-out", 0, "Output file for clustering alignments", aln_out)
 		("reps", 0, "Output file for representative sequences in FASTA format. Only includes id and sequence (no additional header data).", reps_out)
-		("single-step", 0, "Perform one computational step of clustering then exit", single_step);
+		("single-step", 0, "Perform one computational step of clustering then exit", single_step)
+		("linclust-minichunk", 0, "Minimal chunk size for linclust (default=auto)", linclust_minichunk);
 
-	auto& memory_opt = parser.add_group("Memory options", { cluster, RECLUSTER, CLUSTER_REASSIGN, GREEDY_VERTEX_COVER, DEEPCLUST, LINCLUST, CLUSTER_REALIGN });
+	auto& memory_opt = parser.add_group("Memory options", { cluster, RECLUSTER, CLUSTER_REASSIGN, GREEDY_VERTEX_COVER, DEEPCLUST, LINCLUST, CLUSTER_REALIGN, COUNT_DISTINCT });
 	memory_opt.add()
 		("memory-limit", 'M', "Memory limit in GB (default = 16G)", memory_limit);
 
@@ -384,7 +385,6 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 	realign_opt.add()
 		("clusters", 0, "Clustering input file mapping sequences to representatives", clustering);
 
-	string algo_str;
 #ifdef WITH_DNA
     string dna_extension_string;
 #endif
@@ -412,7 +412,8 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("length-ratio-threshold", 0, "Matrix adjust threshold", length_ratio_threshold, -1.0)
 		("cbs-angle", 0, "Matrix adjust threshold", cbs_angle, -1.0)
 		("hit-membuf", 0, "Buffer intermediate hits in memory", hit_membuf)
-		("fpu-compat", 0, "Floating point operations compatibility mode", fpu_compat);
+		("fpu-compat", 0, "Floating point operations compatibility mode", fpu_compat)
+		("no-mempool", 0, "Disable per-thread memory pool", no_mem_pool);
 
 	auto& advanced = parser.add_group("Advanced options", { blastp, blastx, blastn, regression_test });
 	advanced.add()
@@ -453,6 +454,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("stop-match-score", 0, "Set the match score of stop codons against each other.", stop_match_score, 1)		
 		("target-indexed", 0, "Enable target-indexed mode", target_indexed)
 		("self", 0, "Enable self-alignment", self)
+		("no-reorder", 0, "Do not reorder alignment output", no_reorder)
 		("daa-build-version", 0, "diamond build version to write to DAA file", daa_build_version)
 		("cut-bar", 0, "", cut_bar)
 		("check-multi-target", 0, "", check_multi_target)
@@ -501,9 +503,6 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 	composition_matrix_options.add()
 		("sample-size", 0, "randomly sample this many distinct sequence pairs", composition_matrix_sample_size);
 
-	double rank_ratio2, lambda, K;
-	unsigned window, min_ungapped_score, hit_band, min_hit_score;
-	bool verbose;
 	auto& deprecated_options = parser.add_group("", { blastp, blastx });
 	deprecated_options.add()
 		("window", 'w', "window size for local hit search", window)
@@ -607,7 +606,6 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("deque_bucket_size", 0, "", deque_bucket_size, (size_t)524288)
 		("max-swipe-dp", 0, "", max_swipe_dp, INT64_C(1000000))
 		("no-reextend", 0, "", no_reextend)
-		("no-reorder", 0, "", no_reorder)
 		("file1", 0, "", file1)
 		("file2", 0, "", file2)
 		("key2", 0, "", key2)
@@ -632,7 +630,6 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		("hamming-ext", 0, "", hamming_ext)
 		("diag-filter-id", 0, "", diag_filter_id)
 		("diag-filter-cov", 0, "", diag_filter_cov)
-		("seed-index", 0, "", seed_index)
 		("dbtype", 0, "type of sequences in database file (nucl/prot)", dbstring, string("prot"))
 		("cluster-similarity", 0, "Clustering similarity measure (default=\"normalized_bitscore_global\")", cluster_similarity)
 		("cluster-threshold", 0, "Threshold for the similarity measure (default=50%)", cluster_threshold)
@@ -805,6 +802,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 	case Config::CLUSTER_REASSIGN:
 	case Config::GREEDY_VERTEX_COVER:
 	case Config::RECLUSTER:
+	case Config::COUNT_DISTINCT:
 		if (argc != 2)
 			*message_stream << "#CPU threads: " << threads_ << endl;
 	default:
@@ -837,9 +835,6 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 			throw runtime_error("Query range culling is only supported in frameshift alignment mode (option -F).");
 		if (matrix_file == "") {
 			score_matrix = ScoreMatrix(to_upper_case(matrix), gap_open, gap_extend, frame_shift, stop_match_score, 0, cbs_matrix_scale);
-			//blosum80 = ScoreMatrix("BLOSUM80", 11, 1, frame_shift, stop_match_score, 0, cbs_matrix_scale);
-			//pam70 = ScoreMatrix("PAM70", 11, 1, frame_shift, stop_match_score, 0, cbs_matrix_scale);
-			//pam30 = ScoreMatrix("PAM30", 10, 1, frame_shift, stop_match_score, 0, cbs_matrix_scale);
 		}
 		else {
 			if (gap_open == -1 || gap_extend == -1)
@@ -919,10 +914,6 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 		throw runtime_error("--multiprocessing requires setting --parallel-tmpdir");
 	
 	if (multiprocessing) {
-		// char * env_str = std::getenv("SLURM_JOBID");
-		// if (env_str) {
-		// 	parallel_tmpdir = join_path(parallel_tmpdir, "diamond_job_"+string(env_str));
-		// }
 		mkdir(parallel_tmpdir);
 	}
 
@@ -933,7 +924,7 @@ Config::Config(int argc, const char **argv, bool check_io, CommandLineParser& pa
 	trace_pt_membuf = hit_membuf;
 
 	if (command != Config::version) {
-		static const std::chrono::time_point<std::chrono::system_clock> release_time = std::chrono::system_clock::from_time_t(1785751353);
+		static const std::chrono::time_point<std::chrono::system_clock> release_time = std::chrono::system_clock::from_time_t(1788269526);
 		if (std::chrono::system_clock::now() - release_time > std::chrono::hours(180 * 24)) {
 			set_color(Color::YELLOW, true);
 			cerr << "Warning: This version of DIAMOND is more than 180 days old. It is recommended to always use the latest version." << endl;

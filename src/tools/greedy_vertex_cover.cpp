@@ -233,7 +233,11 @@ static DegreePartition edge_pass_two(const RadixedTable& rep_sorted) {
 		VolumedFile f(*it);
 		InputBuffer<Edge> data(f);
 		*message_stream << "Finding neighbor counts bucket " << it - rep_sorted.begin() + 1 << "/" << rep_sorted.size() << " records=" << data.size() << endl;
+#ifdef NDEBUG
 		ips4o::parallel::sort(data.begin(), data.end());
+#else
+		std::sort(data.begin(), data.end());
+#endif
 		auto i = merge_keys(data.begin(), data.end(), Edge::GetKey());
 		while (i.good()) {
 			const OId d = node_degree(i.begin(), i.end());
@@ -253,7 +257,11 @@ static RadixedTable edge_pass_three(const RadixedTable& rep_sorted, const Degree
 		VolumedFile f(*it);
 		InputBuffer<Edge> data(f);
 		*message_stream << "Writing degree sorted edges " << it - rep_sorted.begin() + 1 << "/" << rep_sorted.size() << " records=" << data.size() << endl;
+#ifdef NDEBUG
 		ips4o::parallel::sort(data.begin(), data.end());
+#else
+		std::sort(data.begin(), data.end());
+#endif
 		auto i = merge_keys(data.begin(), data.end(), Edge::GetKey());
 		while (i.good()) {
 			const int bucket = p.bucket_index(node_degree(i.begin(), i.end()));
@@ -284,7 +292,11 @@ static vector<OId> edge_pass_four(const RadixedTable& degree_sorted, OId db_size
 		*message_stream << "Queue nodes=" << queue.size() << " edges=" << edges_queued << " top degree=" << (queue.empty() ? 0 : queue.top().degree) << endl;
 		f.remove();
 		const OId next_degree = i > 0 ? degree_sorted[i - 1].key_end() - 1 : 0;
+#ifdef NDEBUG
 		ips4o::parallel::sort(data.begin(), data.end());
+#else
+		std::sort(data.begin(), data.end());
+#endif
 		auto it = merge_keys(data.begin(), data.end(), Edge::GetKey());
 		while (it.good()) {
 			if (clustering[it.key()] != numeric_limits<OId>::max()) {

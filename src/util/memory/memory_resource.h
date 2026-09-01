@@ -44,7 +44,11 @@ struct memory_resource {};
 struct monotonic_buffer_resource : public memory_resource {
     void release() {}
 };
-struct unsynchronized_pool_resource : public memory_resource {};
+struct unsynchronized_pool_resource : public memory_resource {
+    unsynchronized_pool_resource() {}
+    unsynchronized_pool_resource(memory_resource*) {}
+    void release() {}
+};
 
 inline memory_resource* get_default_resource() {
     static memory_resource r;

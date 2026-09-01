@@ -44,7 +44,7 @@ static constexpr int64_t CHECK_FOR_DNA_COUNT = 10;
 static SeqFileFormat guess_format(File& file) {
 	string r = file.peek(1);
 	if (r.empty())
-		throw FormatDetectionError("Error detecting input file format. Input file seems to be empty.");
+		throw EmptyFileError("Error detecting input file format. Input file seems to be empty.");
 	switch (r.front()) {
 	case '>': return SeqFileFormat::FASTA;
 	case '@': return SeqFileFormat::FASTQ;
@@ -65,7 +65,6 @@ FastaFile::FastaFile(const vector<string>& file_name, Flags flags, const ValueTr
 	if (bool(flags & (Flags::TAXON_MAPPING | Flags::TAXON_NODES | Flags::TAXON_RANKS | Flags::TAXON_SCIENTIFIC_NAMES)))
 		throw runtime_error("Fasta database format does not support taxonomic features.");
 	
-	//Util::Tsv::Config config(format_ == SeqFileFormat::FASTA ? FASTA_SEP : FASTQ_SEP, format_ == SeqFileFormat::FASTA ? (TokenizerBase*)(new FastaTokenizer()) : new FastqTokenizer);	
 	file_.emplace_back(file_name.front(), "rb", File::Flags::TREAT_BLANK_AS_STDIN | File::Flags::DETECT_COMPRESSION);
 	format_ = guess_format(file_.back());
 	if (file_name.size() > 1)
@@ -121,14 +120,19 @@ void FastaFile::close() {
 		f.close();	
 }
 
+void FastaFile::rewind() {
+	raw_chunk_no_ = 0;
+	oid_ = 0;
+	for (auto& f : file_)
+		f.rewind();
+	file_ptr_ = file_.begin();
+}
+
 void FastaFile::set_seqinfo_ptr(OId i) {
 	if (i == oid_)
 		return;
 	if (i == 0) {
-		raw_chunk_no_ = 0;
-		oid_ = 0;
-		for (auto& f : file_)
-			f.rewind();
+		rewind();
 		return;
 	}
 	else if (i == seqs_) {

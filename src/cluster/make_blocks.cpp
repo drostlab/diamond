@@ -330,12 +330,13 @@ static bool can_add(uint64_t block_letters, uint64_t block_seqs, uint64_t seq_le
 	return block_letters + seq_len <= block_letter_limit;
 }
 
-vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstream>>& out, vector<unique_ptr<ofstream>>& acc_out) {
+vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstream>>& out, vector<unique_ptr<ofstream>>& acc_out, const string& seqs_vf, const string& accs_vf) {
 	const bool first_round_linear = job.is_linear_round();
-	const string input_parts = job.root_dir() + "input.tsv", input_letters = job.root_dir() + "input_letters.txt";
+	const string input_letters = job.root_dir() + "input_letters.txt", out_dir = job.root_dir() + "input_minichunks" + PATH_SEPARATOR;
 	const string length_dir = job.root_dir() + "length_sorted" + PATH_SEPARATOR;
 	job.log("Memory limit = %" PRIu64, job.mem_limit);
 	job.make_temp_dir(length_dir);
+	job.make_temp_dir(out_dir);
 	FileArray length_files(length_dir, RADIX_COUNT, job.worker_id(), false);
 	uint64_t letters = 0, sequence_count = 0;
 	{
@@ -359,7 +360,7 @@ vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstre
 			letters += volume_file->letters().value();
 			const OId n = volume_file->sequence_count().value();
 			for (OId j = 0; j < n; ++j) {
-				const uint64_t length = volume_file->seq_length(j);				
+				const uint64_t length = volume_file->seq_length(j);
 				const LengthRecord record{ length, sequence_count++ };
 				buffers.write(len_bucket(length), record);
 			}
@@ -367,12 +368,7 @@ vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstre
 	}
 	length_files.close();
 	const RadixedTable length_buckets = length_files.buckets(16 - RADIX_BITS);
-	ofstream letters_out(input_letters);
-	letters_out << letters << endl;
-	letters_out << sequence_count << endl;
-	if (!letters_out)
-		throw runtime_error("Error writing file " + input_letters);
-	letters_out.close();
+	
 	job.log("Computing blocks");
 	std::ostringstream ss;
 	//volumes.set_max_oid(sequence_count - 1);
@@ -380,17 +376,26 @@ vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstre
 	ss << "Letters in database = " << letters << endl;
 	ss << "Database blocks:" << endl;
 
-	double block_gb;
-	int index_chunks;
+	uint64_t minichunk_size = gb_to_bytes(1e6);
+	int index_chunks = 1;
 	if (!first_round_linear) {
-		block_gb = 1e6;
-		index_chunks = 1;
 	}
-	else
-		tie(block_gb, index_chunks) = ::block_size(job.mem_limit, letters, Sensitivity::FAST, true, config.threads_); // TODO take cluster steps into account here
-	const uint64_t block_size = gb_to_bytes(block_gb);
-	job.log("Block size = %" PRIu64 ", index chunks = %d", block_size, index_chunks);
-	ofstream idx(input_parts);
+	else if (config.mutual_cover.present()) {
+		double block_gb;
+		tie(block_gb, index_chunks) = ::block_size(job.mem_limit, letters, Sensitivity::FAST, true, config.threads_, config.mutual_cover.present()); // TODO take cluster steps into account here
+		minichunk_size = gb_to_bytes(block_gb);
+	}
+	else {
+		if (config.linclust_minichunk.empty()) {
+			minichunk_size = std::min(std::max(job.mem_limit / 16, 512 * MEGABYTES), 32 * GIGABYTES);
+			minichunk_size = std::max(minichunk_size, letters / (max_open_files_per_process() / 2));
+		}
+		else
+			minichunk_size = Util::String::interpret_number(config.linclust_minichunk);
+	}
+	
+	job.log("Minichunk size = %" PRIu64 "", minichunk_size);
+	ofstream idx_seqs(seqs_vf), idx_accs(accs_vf);
 	vector<int> block_mapping(sequence_count);
 	int block = 0;
 	uint64_t block_letters = 0, seqs = 0;
@@ -399,22 +404,32 @@ vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstre
 			return;
 		ss << seqs << '\t' << block_letters << endl;
 		const string block_idx = std::to_string(block);
-		const string name = job.root_dir() + "input" + block_idx + ".faa";
+		const string name = out_dir + block_idx + ".faa", acc_name = out_dir + block_idx + ".tsv";
 		out.emplace_back(new ofstream(name));
-		acc_out.emplace_back(new ofstream(job.root_dir() + "input" + block_idx + ".tsv"));
-		idx << name << '\t' << seqs << endl;
+		if (!out.back())
+			throw runtime_error("Error opening file " + name + ". " + file_open_error(name));
+		acc_out.emplace_back(new ofstream(acc_name));
+		if (!acc_out.back())
+			throw runtime_error("Error opening file " + acc_name + ". " + file_open_error(acc_name));
+		idx_seqs << name << '\t' << seqs << endl;
+		idx_accs << acc_name << '\t' << seqs << endl;
 		++block;
 		block_letters = 0;
 		seqs = 0;
 	};
+
 	for (auto bucket = length_buckets.crbegin(); bucket != length_buckets.crend(); ++bucket) {
 		VolumedFile files(*bucket);
 		InputBuffer<LengthRecord> lengths(files);
+#ifdef NDEBUG
 		ips4o::parallel::sort(lengths.begin(), lengths.end(), greater_length, config.threads_);
+#else
+		std::sort(lengths.begin(), lengths.end(), greater_length);
+#endif
 		for (const LengthRecord& record : lengths) {
-			if (!can_add(block_letters, seqs, record.length, block_size))
+			if (!can_add(block_letters, seqs, record.length, minichunk_size))
 				finish_block();
-			if (!can_add(block_letters, seqs, record.length, block_size))
+			if (!can_add(block_letters, seqs, record.length, minichunk_size))
 				throw runtime_error("Sequence exceeds supported maximum block size.");
 			block_letters += record.length;
 			block_mapping[record.oid] = block;
@@ -424,6 +439,13 @@ vector<int> make_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstre
 	}
 	finish_block();
 	rmdir(length_dir);
-	job.log(ss.str().c_str());
+	ofstream letters_out(input_letters);
+	letters_out << letters << endl;
+	letters_out << sequence_count << endl;
+	letters_out << out.size() << endl;
+	if (!letters_out)
+		throw runtime_error("Error writing file " + input_letters);
+	letters_out.close();
+	job.log_raw(ss.str());
 	return block_mapping;
 }

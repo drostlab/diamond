@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdexcept>
 #include <utility>
 #include "basic/config.h"
+#include "util/memory/mem_profile.h"
 #include "radix_cluster.h"
 #include "../data_structures/hash_table.h"
 #include "../data_structures/double_array.h"
@@ -124,6 +125,7 @@ void table_join(
 	const Key keys = (Key)1 << (total_bits - shift);
 	ExtractBits<Key> key(keys, shift);
 	RelPtr *table = (RelPtr*)calloc(keys, sizeof(RelPtr));
+	MEM_TRACK(table, (int64_t)keys * sizeof(RelPtr));
 	RelPtr *p;
 
 	for (T *i = R.data; i < R.end(); ++i)
@@ -168,6 +170,7 @@ void table_join(
 		p->s += sizeof(typename T::Value);
 	}
 
+	MEM_UNTRACK(table);
 	free(table);
 }
 
@@ -216,8 +219,12 @@ std::pair<DoubleArray<typename T::Value>, DoubleArray<typename T::Value>> hash_j
 	if (swap)
 		std::swap(R, S);
 	T *buf_r = (T*)malloc(sizeof(T) * R.n), *buf_s = (T*)malloc(sizeof(T) * S.n);
+	MEM_TRACK(buf_r, (int64_t)sizeof(T) * R.n);
+	MEM_TRACK(buf_s, (int64_t)sizeof(T) * S.n);
 	DoubleArray<typename T::Value> out_r((void*)R.data), out_s((void*)S.data);
 	hash_join(R, S, buf_r, buf_s, out_r, out_s, total_bits);
+	MEM_UNTRACK(buf_r);
+	MEM_UNTRACK(buf_s);
 	free(buf_r);
 	free(buf_s);
 	if (swap)

@@ -46,6 +46,24 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <arm_neon.h>
 #endif
 
+/* ARCH_ID identifies the object library variant a translation unit is compiled into:
+   0 = generic, 1 = SSE4.1, 2 = AVX2, 3 = AVX512, 4 = NEON.
+
+   The AVX512 variant shares the 256 bit AVX2 vector kernels. Being compiled for
+   x86-64-v4 it gets them in EVEX encoding with 32 vector registers and the mask
+   registers available to the compiler, which is where its (small) advantage comes
+   from. Actual 512 bit kernels exist for the seed fingerprints and for tantan, but
+   they are only compiled in under WITH_AVX512_WIDE because they measured slower in
+   situ on Ice Lake SP (Xeon 8360Y): a fingerprint is 48 bytes, so a zmm load of one
+   straddles a cache line almost every time, and that outweighs comparing all 48
+   bytes in a single instruction. Worth re-measuring on Sapphire Rapids and Zen 4/5,
+   where the 512 bit datapath and cache behaviour differ. */
+#if ARCH_ID == 2 || ARCH_ID == 3
+#define ARCH_AVX2_KERNELS 1
+#else
+#define ARCH_AVX2_KERNELS 0
+#endif
+
 namespace SIMD {
 
 enum class Arch { None, Generic, SSE4_1, AVX2, AVX512, NEON };

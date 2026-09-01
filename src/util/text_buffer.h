@@ -24,6 +24,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <vector>
 #include "algo/varint.h"
 #include "string/string.h"
+#include "memory/mem_profile.h"
 
 inline size_t find_first_of(const char* s, const char* delimiters)
 {
@@ -47,6 +48,7 @@ struct TextBuffer
 
 	~TextBuffer()
 	{
+		MEM_UNTRACK(data_);
 		free(data_);
 	}
 
@@ -56,8 +58,10 @@ struct TextBuffer
 		if (s + n < alloc_size_)
 			return;
 		alloc_size_ = s + n + BLOCK_SIZE - ((s + n) & (BLOCK_SIZE - 1));
+		MEM_UNTRACK(data_);
 		data_ = (char*)realloc(data_, alloc_size_);
 		if (data_ == nullptr) throw std::bad_alloc();
+		MEM_TRACK(data_, alloc_size_);
 		ptr_ = data_ + s;
 	}
 

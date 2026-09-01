@@ -197,8 +197,6 @@ static BlastDefLine decode_defline(const Node& node, bool full_titles, bool taxi
     return defline;
 }
 
-#include <iostream>
-
 vector<BlastDefLine> decode_deflines(const char* header_data, size_t len, bool all, bool full_titles, bool taxids) {
     vector<BlastDefLine> out;
 	vector<Node> nodes = decode(header_data, len);

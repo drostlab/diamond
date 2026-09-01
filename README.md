@@ -44,8 +44,8 @@ About
 =====
 DIAMOND is developed by Dr. Benjamin J. Buchfink, independent scientist, Tübingen, Germany,
 supported by the Max Planck Society for the Advancement of Science. From 2019-2024,
-it was developed by Benjamin J. Buchfink at the Drost lab, Max Planck Institute for Biology
-Tübingen. From 2018-2019, its development was supported by the German Federal Ministry
+it was developed by Benjamin J. Buchfink at the [Drost lab](https://drostlab.com/), [Max Planck Institute for Biology Tübingen](https://www.bio.mpg.de/).
+From 2018-2019, its development was supported by the German Federal Ministry
 for Economic Affairs and Energy through an EXIST grant. From 2016-2018, it was developed
 by Benjamin J. Buchfink as an independent researcher. From 2013-2015, the initial version
 was developed by Benjamin J. Buchfink at the Huson lab, University of Tübingen, Germany.
@@ -55,20 +55,17 @@ was developed by Benjamin J. Buchfink at the Huson lab, University of Tübingen,
 \[[Bluesky](https://bsky.app/profile/bbuchfink.bsky.social)\]
 \[[LinkedIn](https://www.linkedin.com/in/benjamin-j-buchfink-875692105/)\]
 \[[Google Scholar](https://scholar.google.de/citations?user=kjPIF1cAAAAJ)\]
-\[[Drost lab](https://drostlab.com/)\]
-\[[MPI-BIO](https://www.bio.mpg.de/)\]
+\[[Wikipedia](https://en.wikipedia.org/wiki/DIAMOND_(biotechnology))\]
 
-**When using the tool in published research, please cite:**
-
--   Buchfink BJ, Reuter K, Drost HG, \"Sensitive protein alignments at tree-of-life
-    scale using DIAMOND\", *Nature Methods* **18**, 366–368 (2021).
-    [doi:10.1038/s41592-021-01101-x](https://doi.org/10.1038/s41592-021-01101-x)
-
-For sequence clustering:
+Publications:
 
 -   Buchfink BJ, Barbé É, Ashkenazy H, Reuter K, Kennedy JA, Drost HG, \"Clustering the protein
     universe of life using DIAMOND DeepClust\", *Nature Methods* **23**, 724-727 (2026).
     [doi:10.1038/s41592-026-03030-z](https://doi.org/10.1038/s41592-026-03030-z)
+
+-   Buchfink BJ, Reuter K, Drost HG, \"Sensitive protein alignments at tree-of-life
+    scale using DIAMOND\", *Nature Methods* **18**, 366–368 (2021).
+    [doi:10.1038/s41592-021-01101-x](https://doi.org/10.1038/s41592-021-01101-x)
 
 Original publication to cite DIAMOND until v0.9.25:
 

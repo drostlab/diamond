@@ -28,10 +28,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "search/hamming/finger_print.h"
 #include "search/seed_array/enum_seeds.h"
 #include "search/stage2.h"
+#include "util/data_structures/bloom_filter.h"
 #include "util/log_stream.h"
 #include "util/ptr_vector.h"
 #include "util/simd/dispatch.h"
 
+using std::endl;
 using std::array;
 using std::vector;
 using ::DISPATCH_ARCH::FingerPrint;
@@ -43,24 +45,53 @@ namespace Search { namespace DISPATCH_ARCH {
    occurrence of that seed in the longest sequence of the reference block, which
    takes the role of the query in the resulting seed hit. */
 
+// Records the seeds of the member block in a Bloom filter. Only used by the lookup
+// count diagnostic, see LinIndex::COUNT_LOOKUPS.
+struct BloomCallback {
+
+	BloomCallback(BloomFilter& filter) :
+		filter(filter)
+	{}
+
+	bool operator()(const uint64_t key, uint64_t, uint32_t, uint64_t) {
+		filter.insert(key);
+		return true;
+	}
+
+	void finish() {}
+
+	BloomFilter& filter;
+
+};
+
 struct ScanCallback {
 
-	ScanCallback(const Context& context, Search::Config& cfg, const LinIndex& index, size_t thread_id) :
+	ScanCallback(const Context& context, Search::Config& cfg, const LinIndex& index, unsigned shape_id, size_t thread_id) :
 		writer(*cfg.seed_hit_buf, thread_id),
-		work_set(context, cfg, 0, &writer, nullptr, nullptr),
+		work_set(context, cfg, shape_id, &writer, nullptr, nullptr),
 		index(index),
 		query_seqs(cfg.query->seqs()),
 		target_seqs(cfg.target->seqs()),
 		target_seed_hits(cfg.target_seed_hits.get()),
 		hamming_filter_id(cfg.hamming_filter_id),
-		self(config.self && cfg.current_ref_block == 0)
+		self(config.self && cfg.current_ref_block == 0),
+		lookup_count(0),
+		paired_count(0)
 	{}
 
 	bool operator()(const uint64_t key, const uint64_t pos, const uint32_t block_id, const uint64_t shape_id) {
+		++lookup_count;
 		const uint64_t pivot = index(key);
 		if (pivot == 0)
 			return true;
 		work_set.stats.inc(Statistics::SEED_HITS);
+
+		const std::pair<BlockId, Loc> l = query_seqs.local_position((int64_t)pivot);
+		const unsigned query_id = l.first;
+		if (self && query_id == block_id)
+			return true;
+
+		++paired_count;
 
 		alignas(64) array<char, 48> fq, fs;
 		FingerPrint::load(query_seqs.data(pivot), &fq);
@@ -68,11 +99,7 @@ struct ScanCallback {
 		if (FingerPrint(fq).match(FingerPrint(fs)) < hamming_filter_id)
 			return true;
 		work_set.stats.inc(Statistics::TENTATIVE_MATCHES1);
-
-		const std::pair<BlockId, Loc> l = query_seqs.local_position((int64_t)pivot);
-		const unsigned query_id = l.first;
-		if (self && query_id == block_id)
-			return true;
+		
 		const Loc seed_offset = l.second;
 		const int query_len = query_seqs.length(query_id);
 		const int score_cutoff = ungapped_cutoff(query_len, work_set);
@@ -111,36 +138,89 @@ struct ScanCallback {
 	const bool self;
 	unsigned last_query_ = std::numeric_limits<unsigned>::max();
 	Loc last_seed_offset_ = std::numeric_limits<Loc>::min();
+	uint64_t lookup_count, paired_count;
 
 };
 
+/* The seed shapes are processed one after the other: the hash table of the reference
+   block is rebuilt for the shape, the member block is scanned for that shape only, and
+   the table is released again before the next shape is loaded. Holding all shapes at
+   once would multiply the memory of the index by their number. With the lookup count
+   diagnostic enabled, the seeds of the member block are additionally collected in a
+   Bloom filter first and the index entries are counted against it while the table is
+   rebuilt. */
 void scan_lin_index(Search::Config& cfg) {
-	if (shapes.count() != 1)
-		throw std::runtime_error("Seed index search is only supported for a single seed shape.");
 	const int threads = std::max(config.threads_, 1);
-	const vector<uint32_t> patterns = shapes.patterns(0, 1);
-	// A Context holds two PatternMatcher lookup tables of 2^MAX_SHAPE_LEN bytes
-	// each and must not be placed on the stack.
-	const std::unique_ptr<Context> context(new Context{ { patterns.data(), patterns.data() + patterns.size() - 1 },
-		{ patterns.data(), patterns.data() + patterns.size() },
-		score_matrix.rawscore(config.short_query_ungapped_bitscore),
-		nullptr,
-		seedp_mask(cfg.seedp_bits) });
-
+	cfg.lin_index->check_encoding(cfg);
 	const auto partition = cfg.target->seqs().partition(threads);
-	// Soft masking is applied to the reference block when its index is built. The
-	// member block is scanned unmasked so that the fingerprints of both blocks are
-	// computed on the same, unmasked sequence data.
-	const EnumCfg enum_cfg{ &partition, 0, 1, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut,
-		MaskingAlgo::NONE, cfg.minimizer_window, false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
 
-	PtrVector<ScanCallback> v;
-	for (int i = 0; i < threads; ++i)
-		v.push_back(new ScanCallback(*context, cfg, *cfg.lin_index, i));
-	enum_seeds(*cfg.target, v, &no_filter, enum_cfg);
-	for (int i = 0; i < threads; ++i)
-		statistics += v[i].work_set.stats;
-	v.clear();
+	for (int s = 0; s < shapes.count(); ++s) {
+		TaskTimer timer;
+		const std::string label = " (shape " + std::to_string(s) + ")";
+
+		/* Soft masking is applied to the reference block when its index is built. The
+		   member block is scanned unmasked so that the fingerprints of both blocks are
+		   computed on the same, unmasked sequence data. The seed encoding is the one the
+		   index was built with, see LinIndex::encoding; filter_masked_seeds makes the
+		   hashed encoding reject a window with a masked letter on a match position of the
+		   shape, which is what the letterwise encoding does unconditionally. */
+		const EnumCfg enum_cfg{ &partition, s, s + 1, cfg.lin_index->seed_encoding(), nullptr, true, false, cfg.seed_complexity_cut,
+			MaskingAlgo::NONE, cfg.minimizer_window, false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
+
+		if (LinIndex::COUNT_LOOKUPS) {
+			/* Filter of the seeds that the member block is going to look up in the index
+			   of this shape. It only serves to report how much of the index the member
+			   block actually touches and is released again before the scan. It is sized
+			   by the number of seed positions of the block, an upper bound for the
+			   number of seeds enumerated from it. */
+			timer.go("Building member seed filter" + label);
+			BloomFilter member_seeds(cfg.target->seqs().raw_len(), threads);
+			PtrVector<BloomCallback> f;
+			for (int i = 0; i < threads; ++i)
+				f.push_back(new BloomCallback(member_seeds));
+			enum_seeds(*cfg.target, f, &no_filter, enum_cfg);
+			f.clear();
+			timer.finish();
+			// The load is computed by counting the bits of the filter, which is not worth
+			// doing if nothing is logged.
+			if (config.verbosity >= 2) {
+				const double load = member_seeds.load();
+				*log_stream << "Member seed filter: size=" << member_seeds.size() << " load=" << load
+					<< " false positive rate=" << BloomFilter::false_positive_rate(load) << std::endl;
+			}
+
+			cfg.lin_index->build_shape(s, &member_seeds);
+		}
+		else
+			cfg.lin_index->build_shape(s);
+
+		*message_stream << "Rep block: " << cfg.query->seqs().mem_size() << ", member block: " << cfg.target->seqs().mem_size() << ", index size: "
+			<< cfg.lin_index->table_size() << ", slots used: " << (int64_t)cfg.lin_index->insert_count() * LinIndex::Table::SLOT_BYTES << endl;
+		const vector<uint32_t> patterns = shapes.patterns(0, s + 1);
+		// A Context holds two PatternMatcher lookup tables of 2^MAX_SHAPE_LEN bytes
+		// each and must not be placed on the stack.
+		const std::unique_ptr<Context> context(new Context{ { patterns.data(), patterns.data() + patterns.size() - 1 },
+			{ patterns.data(), patterns.data() + patterns.size() },
+			score_matrix.rawscore(config.short_query_ungapped_bitscore),
+			nullptr,
+			seedp_mask(cfg.seedp_bits) });
+
+		timer.go("Scanning member block" + label);
+		PtrVector<ScanCallback> v;
+		for (int i = 0; i < threads; ++i)
+			v.push_back(new ScanCallback(*context, cfg, *cfg.lin_index, (unsigned)s, i));
+		enum_seeds(*cfg.target, v, &no_filter, enum_cfg);
+		uint64_t lookup_count = 0, paired_count = 0;
+		for (int i = 0; i < threads; ++i) {
+			statistics += v[i].work_set.stats;
+			lookup_count += v[i].lookup_count;
+			paired_count += v[i].paired_count;
+		}
+		v.clear();
+		timer.finish();
+		*message_stream << "Hit seeds: " << paired_count << '/' << lookup_count << " (" << (lookup_count ? (100.0 * paired_count) / lookup_count : 0) << "%)" << std::endl;
+	}
+	cfg.lin_index->free_shape();
 }
 
 }

@@ -1,6 +1,6 @@
 /****
 DIAMOND protein sequence aligner
-Copyright (C) 2012-2026 Benjamin J. Buchfink
+Copyright (C) 2012-2026 Benjamin J. Buchfink, Klaus Reuter
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/parallel/multiprocessing.h"
 #include "util/parallel/parallelizer.h"
 #include "util/system/system.h"
+#include "util/memory/mem_profile.h"
 #include "data/seed_set.h"
 #include "align/global_ranking/global_ranking.h"
 #include "align/align.h"
@@ -39,6 +40,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "config.h"
 #include "search/seed_array/seed_array.h"
 #include "data/fasta/fasta_file.h"
+#include "data/fasta/volumed_fasta_file.h"
 #include "legacy/dmnd/dmnd.h"
 #include "data/blastdb/blastdb.h"
 #include "search/lin_index/lin_index.h"
@@ -100,12 +102,7 @@ static pair<char*, char*> alloc_buffers(Config& cfg) {
 		config.target_indexed ? nullptr : ARCH_GENERIC::SeedArray<PackedLoc>::alloc_buffer(cfg.query->hst(), cfg.index_chunks) };
 }
 
-static void run_ref_chunk(SequenceFile &db_file,
-	const unsigned query_iteration,
-	File &master_out,
-	vector<File*> &tmp_file,
-	Config& cfg)
-{
+static void run_ref_chunk(SequenceFile &db_file, const unsigned query_iteration, File &master_out, vector<File*> &tmp_file,	Config& cfg) {
 	TaskTimer timer;
 	log_rss();
 	auto& query_seqs = cfg.query->seqs();
@@ -115,7 +112,6 @@ static void run_ref_chunk(SequenceFile &db_file,
 		cfg.target.reset(cfg.target->length_sorted(config.threads_));
 	}	
 
-	//if (config.comp_based_stats == Stats::CBS::COMP_BASED_STATS_AND_MATRIX_ADJUST || flag_any(cfg.output_format->flags, Output::Flags::TARGET_SEQS)) {
 	if (flag_any(cfg.output_format->flags, Output::Flags::TARGET_SEQS)) {
 		cfg.target->unmasked_seqs() = cfg.target->seqs();
 	}
@@ -159,6 +155,7 @@ static void run_ref_chunk(SequenceFile &db_file,
 			cfg.target_seed_hits->emplace_back(cfg.target->seqs().raw_len());
 	}
 
+	*log_stream << "Query bins = " << cfg.query_bins << endl;
 	if (cfg.lin_index) {
 		timer.go("Scanning member block");
 		Search::scan_lin_index(cfg);
@@ -171,23 +168,28 @@ static void run_ref_chunk(SequenceFile &db_file,
 	else if (!config.swipe_all) {
 		timer.go("Building reference histograms");
 		if (query_seeds_bitset.get()) {
-			EnumCfg enum_cfg{ nullptr, 0, 0, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut, MaskingAlgo::NONE, cfg.minimizer_window, false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
+			EnumCfg enum_cfg{ nullptr, 0, 0, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut, MaskingAlgo::NONE, cfg.minimizer_window,
+				false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
 			cfg.target->hst() = SeedHistogram(*cfg.target, true, query_seeds_bitset.get(), enum_cfg, cfg.seedp_bits);
 		}
 		else if (query_seeds_hashed.get()) {
-			EnumCfg enum_cfg{ nullptr, 0, 0, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut, MaskingAlgo::NONE, cfg.minimizer_window, false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
+			EnumCfg enum_cfg{ nullptr, 0, 0, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut, MaskingAlgo::NONE, cfg.minimizer_window,
+				false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
 			cfg.target->hst() = SeedHistogram(*cfg.target, true, query_seeds_hashed.get(), enum_cfg, cfg.seedp_bits);
 		}
 		else {	
-			EnumCfg enum_cfg{ nullptr, 0, 0, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut, cfg.soft_masking, cfg.minimizer_window, false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
+			EnumCfg enum_cfg{ nullptr, 0, 0, cfg.seed_encoding, nullptr, false, false, cfg.seed_complexity_cut, cfg.soft_masking, cfg.minimizer_window,
+				false, false, cfg.sketch_size, cfg.target_seed_hits.get() };
 			cfg.target->hst() = SeedHistogram(*cfg.target, false, &no_filter, enum_cfg, cfg.seedp_bits);
 		}
 
 		timer.go("Allocating buffers");
 		char* ref_buffer, * query_buffer;
-		tie(ref_buffer, query_buffer) = alloc_buffers(cfg);
+		{
+			MEM_SCOPE("search/seed-buffers");
+			tie(ref_buffer, query_buffer) = alloc_buffers(cfg);
+		}
 		timer.finish();
-		*log_stream << "Query bins = " << cfg.query_bins << endl;
 
 		::HashedSeedSet* target_seeds = nullptr;
 		if (config.target_indexed) {
@@ -196,10 +198,11 @@ static void run_ref_chunk(SequenceFile &db_file,
 			timer.finish();
 		}
 		if ((config.command != ::Config::blastn)) {
+			MEM_SCOPE("search/stage1");
 			for (int i = 0; i < shapes.count(); ++i) {
 				if (config.global_ranking_targets)
 					cfg.global_ranking_buffer.reset(new Config::RankingBuffer());
-				search_shape(i, cfg.current_query_block, query_iteration, query_buffer, ref_buffer, cfg, target_seeds); //index_targets(0,cfg,ref_buffer,target_seeds);
+				search_shape(i, cfg.current_query_block, query_iteration, query_buffer, ref_buffer, cfg, target_seeds);
 				if (config.global_ranking_targets)
 					Extension::GlobalRanking::update_table(cfg);
 			}
@@ -326,7 +329,8 @@ static void run_query_iteration(const unsigned query_iteration,
 		if (config.freq_masking && !config.lin_stage1_query)
 			*log_stream << "Seed frequency SD: " << options.freq_sd << endl;
 		*log_stream << "Shape configuration: " << ::shapes << endl;
-	}
+		*log_stream << "Reduction: " << Reduction::get_reduction() << endl;
+ 	}
 
 	if (config.global_ranking_targets) {
 		timer.go("Allocating global ranking table");
@@ -431,6 +435,7 @@ static void run_query_iteration(const unsigned query_iteration,
 			}
 			else {
 				timer.go("Loading reference sequences");
+				MEM_SCOPE("block/target");
 				options.target.reset(db_file.load_seqs(config.block_size(), 0, &options.db_filter->oid_filter));
 				const auto t = timer.microseconds();
 				timer.finish();
@@ -467,11 +472,7 @@ static void run_query_iteration(const unsigned query_iteration,
 	}
 }
 
-static void run_query_chunk(File &master_out,
-	File *unaligned_file,
-	File *aligned_file,
-	Config &options)
-{
+static void run_query_chunk(File &master_out, File *unaligned_file, File *aligned_file, Config& options) {
 	auto P = Parallelizer::get();
 	TaskTimer timer;
 	auto& db_file = *options.db;
@@ -542,17 +543,9 @@ static void run_query_chunk(File &master_out,
 
 				const string query_chunk_output_file = append_label(config.output_file + "_", options.current_query_block);
 				File *query_chunk_out(new File(query_chunk_output_file, "wb", File::Flags::NONE, config.compressor()));
-				// if (*output_format != Output_format::daa)
-				// 	output_format->print_header(*query_chunk_out, align_mode.mode, config.matrix.c_str(), score_matrix.gap_open(), score_matrix.gap_extend(), config.max_evalue, query_ids::get()[0],
-				// 		unsigned(align_mode.query_translated ? query_source_seqs::get()[0].length() : query_seqs::get()[0].length()));
 
 				join_blocks(options.current_ref_block, *query_chunk_out, tmp_file, options, db_file, tmp_file_names);
 
-				// if (*output_format == Output_format::daa)
-				// 	// finish_daa(*static_cast<OutputFile*>(query_chunk_out), *db_file);
-				// 	throw std::runtime_error("output_format::daa");
-				// else
-				// 	output_format->print_footer(*query_chunk_out);
 				query_chunk_out->close();
 				delete query_chunk_out;
 
@@ -588,15 +581,14 @@ static void run_query_chunk(File &master_out,
 	options.query.reset();
 }
 
-static void master_thread(TaskTimer &total_timer, Config &options)
-{
+static void master_thread(TaskTimer& total_timer, Config& options) {
 	log_rss();
 	SequenceFile* db_file = options.db.get();
 	if (config.multiprocessing && config.mp_recover) {
 		const size_t max_assumed_query_chunks = 65536;
 		for (size_t i = 0; i < max_assumed_query_chunks; ++i) {
 			const string file_align_todo = get_ref_part_file_name(stack_align_todo, i);
-			if (! file_exists(file_align_todo)) {
+			if (!file_exists(file_align_todo)) {
 				break;
 			} else {
 				FileStack stack_todo(file_align_todo);
@@ -654,7 +646,10 @@ static void master_thread(TaskTimer &total_timer, Config &options)
 			config.query_file.push_back("");
 		}
 		if (!options.query_file) {
-			options.query_file.reset(new FastaFile(config.query_file, qflags, input_value_traits));
+			if (config.query_file.size() == 1 && VolumedFastaFile::is_volume_list(config.query_file.front()))
+				options.query_file.reset(new VolumedFastaFile(config.query_file.front(), qflags, input_value_traits));
+			else
+				options.query_file.reset(new FastaFile(config.query_file, qflags, input_value_traits));
 			timer.finish();
 			if (!options.query_file->open_stats().empty())
 				*log_stream << options.query_file->open_stats();
@@ -717,6 +712,7 @@ static void master_thread(TaskTimer &total_timer, Config &options)
 			db_file->set_seqinfo_ptr(query_file_offset);
 			timer.finish();
 			timer.go("Loading query sequences");
+			MEM_SCOPE("block/query");
 			db_file->flags() |= qflags;
 			options.query.reset(db_file->load_seqs(config.block_size(), 0, &options.db_filter->oid_filter));
 			const auto t = timer.microseconds();
@@ -726,6 +722,7 @@ static void master_thread(TaskTimer &total_timer, Config &options)
 		}
 		else {
 			timer.go("Loading query sequences");
+			MEM_SCOPE("block/query");
 			options.query.reset(options.query_file->load_seqs(config.block_size(), 0, nullptr));
 			const auto t = timer.microseconds();
 			timer.finish();
@@ -762,8 +759,8 @@ static void master_thread(TaskTimer &total_timer, Config &options)
 
 		if (!config.lin_index_file.empty()) {
 			options.lin_index.reset(new Search::LinIndex(config.lin_index_file, *options.query, options, config.threads_));
-			const Search::LinIndex::Header& h = options.lin_index->header();
-			*message_stream << "Seed index size = " << options.lin_index->size() << ", entries = " << h.entry_count << endl;
+			*message_stream << "Seed index size = " << options.lin_index->size() << ", entries = " << options.lin_index->entry_count()
+				<< ", shapes = " << options.lin_index->header().shape_count << endl;
 		}
 
 		run_query_chunk(*options.out, unaligned_file.get(), aligned_file.get(), options);

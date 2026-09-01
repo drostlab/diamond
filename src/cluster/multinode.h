@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 #include <chrono>
+#include <unordered_map>
 #include <unordered_set>
 #include "basic/config.h"
 #include "util/string/string.h"
@@ -26,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/parallel/atomic.h"
 #include "util/system/system.h"
 #include "volume.h"
+#include "util/algo/hyperloglog.h"
 
 struct ClusterStats {
 	uint64_t hits_evalue_filtered = 0, extensions_computed = 0, hits_filtered = 0, seeds_considered = 0, seeds_indexed = 0;
@@ -60,7 +62,6 @@ struct Job {
 	}
 
 	void finish() {
-		//log("Cleaning up");
 		log_file_.reset();
 		for (const auto& file : sync_files_) {
 			remove_tmp_file(file);
@@ -84,6 +85,8 @@ struct Job {
 	}
 
 	void log(const char* format, ...);
+	void log_raw(const std::string& message);
+	std::string log_prefix() const;
 	void log(const ClusterStats& stats);
 
 	void next_round() {
@@ -93,14 +96,6 @@ struct Job {
 
 	int round() const {
 		return round_;
-	}
-
-	void set_round(int64_t input_count) {
-		input_count_.push_back(input_count);
-	}
-
-	uint64_t sparse_input_count(int round) const {
-		return input_count_[round];
 	}
 
 	void set_round_count(int n, const std::vector<std::string>& steps) {
@@ -143,10 +138,6 @@ struct Job {
 	}
 
 	void register_sync_file(const std::string& file_name) {
-		/*if (!ends_with(file_name, "diamond_job.log"))
-			log("Temp file: %s", file_name.c_str());
-		else
-			return;*/
 		sync_files_.push_back(file_name);
 	}
 
@@ -181,7 +172,6 @@ private:
 	std::vector<std::string> steps_;
 	std::unique_ptr<FileStack> log_file_;
 	std::chrono::system_clock::time_point start_;
-	std::vector<uint64_t> input_count_;
 	ClusterStats stats_;
 	std::vector<std::string> sync_files_;
 	std::vector<std::string> temp_dirs_;
@@ -189,17 +179,29 @@ private:
 
 };
 
-std::pair<std::string, uint64_t> get_reps(Job& job, const VolumedFile& volumes);
+std::pair<std::string, uint64_t> get_reps(Job& job, const std::string& round_minichunks);
 void merge(Job& job, const VolumedFile& volumes, Header hdr_format);
-//void extend(Job& job, std::vector<std::pair<OId, OId>>& out, const VolumedFile& volumes);
-std::vector<int> make_blocks(Job& job, VolumedFile& volumes, std::vector<std::unique_ptr<std::ofstream>>& out, std::vector<std::unique_ptr<std::ofstream>>& acc_out);
-std::string len_sort(Job& job, VolumedFile& volumes);
+std::vector<int> make_blocks(Job& job, VolumedFile& volumes, std::vector<std::unique_ptr<std::ofstream>>& out, std::vector<std::unique_ptr<std::ofstream>>& acc_out,
+	const std::string& seqs_vf, const std::string& accs_vf);
+std::pair<std::string, std::string> len_sort(Job& job, VolumedFile& volumes);
 std::vector<OId> build_merged(Job& job);
 void run_search(Job& job, const VolumedFile& volumes, int64_t r, int64_t i, std::string base_dir, std::unique_ptr<std::vector<BitVector>>& seed_hit_table);
-void configure_round(Job& job, const VolumedFile& volumes);
+void configure_round(Job& job, uint64_t letter_count);
+/* Masking algorithm applied to the input sequences when the length sorted minichunks are
+   written. Everything downstream (seed counting, seed index building, alignment) reads the
+   minichunks and thus works on already masked sequences. */
+MaskingAlgo input_masking_algo();
 bool use_lin_index(const Job& job);
 std::string lin_index_file(const std::string& volume_path);
 void build_lin_indices(Job& job, const VolumedFile& volumes);
+/* Text file written next to the volume list of the superblocks, holding one line per
+   superblock: the path of the superblock followed by the estimated number of distinct
+   seeds of its most frequent seed shape, i.e. by the number of pivots that its seed index
+   will hold. The hash tables of the index are sized from this count. */
+std::string seed_count_file(const std::string& volume_list_file);
+std::unordered_map<std::string, uint64_t> read_seed_counts(const std::string& file_name);
 void remove_lin_indices(const VolumedFile& volumes);
 std::pmr::unordered_map<OId, std::pmr::string> read_mapping_table(Job& job, const Volume& vol, size_t v, std::pmr::memory_resource& pool, bool remove);
 std::pmr::unordered_map<OId, std::pmr::string> read_mapping_tables(Job& job, const std::unordered_set<OId>& wanted, std::pmr::memory_resource& pool);
+std::string make_merged_blocks(Job& job, const std::string& minichunks, const std::string& merged_dir, uint64_t letter_count);
+std::pair<std::vector<std::vector<HyperLogLog>>, std::vector<uint64_t>> count_distinct_seeds(Job& job, const VolumedFile& minichunks, const uint64_t letter_count);

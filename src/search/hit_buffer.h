@@ -26,6 +26,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "hit.h"
 #include "util/io/file.h"
 #include "util/data_structures/queue.h"
+#include "util/hash_function.h"
 #include "util/text_buffer.h"
 #include "run/config.h"
 
@@ -38,17 +39,21 @@ struct HitBuffer
 	using Key = uint32_t;
 	
 	HitBuffer(const std::vector<Key>& key_partition, const std::string& tmpdir, bool long_subject_offsets, int query_contexts, int thread_count, Config& cfg);
-	HitBuffer(const std::vector<Key>& key_partition, const std::string& tmpdir, bool long_subject_offsets, int query_contexts, int thread_count, uint32_t max_query, uint64_t max_target, SimpleThreadPool& search_pool);
+	HitBuffer(const std::vector<Key>& key_partition, const std::string& tmpdir, bool long_subject_offsets, int query_contexts, int thread_count, uint32_t max_query, uint64_t max_target, SimpleThreadPool& search_pool, bool hash_key = false);
 	~HitBuffer() noexcept(false);
 	void finish_writing();
-
+		
 	Key begin(int bin) const
 	{
+		if (hash_key_)
+			return 0;
 		return bin == 0 ? 0 : key_partition_[bin - 1];
 	}
 
 	Key end(int bin) const
 	{
+		if (hash_key_)
+			return key_partition_.back();
 		return key_partition_[bin];
 	}
 
@@ -58,6 +63,8 @@ struct HitBuffer
 
 	int bin(Key key) const {
 		const int n = (int)key_partition_.size();
+		if (hash_key_)
+			return (int)(MurmurHash()(key) % (uint64_t)n);
 		for (int i = 0; i < n; ++i)
 			if (key < key_partition_[i])
 				return i;
@@ -196,8 +203,14 @@ struct HitBuffer
 		std::vector<uint32_t> buf_count_;
 		HitBuffer &parent_;
 	};
+	
+	void plan_bin_groups(uint64_t max_bytes);
 
-	bool load(size_t max_size);
+	int group_end(int b) const {
+		return bin_group_end_.empty() ? b + 1 : bin_group_end_[b];
+	}
+
+	bool load();
 
 	std::tuple<Hit*, size_t, Key, Key> retrieve() {
 		if (config.trace_pt_membuf || config.swipe_all) {
@@ -235,8 +248,15 @@ struct HitBuffer
 		return count_[i];
 	}
 
-	uint64_t next_bin_size() const {
-		return bins_processed_ < bins() ? bin_size(bins_processed_) : 0;
+	int64_t group_size(int b) const {
+		int64_t n = 0;
+		for (int i = b, e = group_end(b); i < e; ++i)
+			n += bin_size(i);
+		return n;
+	}
+
+	uint64_t next_group_size() const {
+		return bins_processed_ < bins() ? group_size(bins_processed_) : 0;
 	}
 
 	void alloc_buffer();
@@ -249,6 +269,8 @@ private:
 	void abort() noexcept;
 
 	const std::vector<Key> key_partition_;
+	const bool hash_key_;
+	std::vector<int> bin_group_end_;
 	const bool long_subject_offsets_;
 	const int query_contexts_;
 	const uint32_t max_query_;

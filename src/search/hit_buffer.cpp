@@ -26,6 +26,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/log_stream.h"
 #include "util/parallel/simple_thread_pool.h"
 #include "data/block/block.h"
+#include "util/memory/mem_profile.h"
 
 using std::vector;
 using std::string;
@@ -44,11 +45,12 @@ namespace Search {
 HitBuffer::HitBuffer(const vector<Key>& key_partition, const string& tmpdir, bool long_subject_offsets, int query_contexts, int thread_count, Config& cfg) :
 	HitBuffer(key_partition, tmpdir, long_subject_offsets, query_contexts, thread_count,
 		(uint32_t)cfg.query->seqs().size(), (uint64_t)cfg.target->seqs().raw_len(),
-		cfg.search_pool)
+		cfg.search_pool, cfg.lin_index.get() != nullptr)
 {}
 
-HitBuffer::HitBuffer(const vector<Key>& key_partition, const string& tmpdir, bool long_subject_offsets, int query_contexts, int thread_count, uint32_t max_query, uint64_t max_target, SimpleThreadPool& search_pool) :
+HitBuffer::HitBuffer(const vector<Key>& key_partition, const string& tmpdir, bool long_subject_offsets, int query_contexts, int thread_count, uint32_t max_query, uint64_t max_target, SimpleThreadPool& search_pool, bool hash_key) :
 	key_partition_(key_partition),
+	hash_key_(hash_key),
 	long_subject_offsets_(long_subject_offsets),
 	query_contexts_(query_contexts),
 	max_query_(max_query),
@@ -163,10 +165,28 @@ HitBuffer::~HitBuffer() noexcept(false) {
 	delete[] count_;
 }
 
-bool HitBuffer::load(size_t max_size) {
+void HitBuffer::plan_bin_groups(uint64_t max_bytes) {
+	const int n = bins();
+	bin_group_end_.assign(n, 0);
+	const bool combine = !config.trace_pt_membuf && !config.swipe_all;
+	int b = 0;
+	while (b < n) {
+		int e = b + 1;
+		uint64_t size = (uint64_t)count_[b] * sizeof(Hit);
+		if (combine)
+			while (e < n && size + (uint64_t)count_[e] * sizeof(Hit) <= max_bytes) {
+				size += (uint64_t)count_[e] * sizeof(Hit);
+				++e;
+			}
+		for (int i = b; i < e; ++i)
+			bin_group_end_[i] = e;
+		b = e;
+	}
+}
+
+bool HitBuffer::load() {
 	if (load_worker_)
 		throw runtime_error("HitBuffer::load(): previous load still in progress");
-	max_size = std::max(max_size, (size_t)1);
 	data_size_next_ = 0;
 	auto worker = [&](int end) {
 		try {
@@ -183,18 +203,14 @@ bool HitBuffer::load(size_t max_size) {
 	if (bins_processed_ == bins()) {
 		return false;
 	}
-	size_t size = count_[bins_processed_], current_size;
-	const int begin = bins_processed_;
-	int end = bins_processed_ + 1;
+	const int begin = bins_processed_, end = group_end(begin);
 	if (!config.trace_pt_membuf && !config.swipe_all) {
-		size_t disk_size = tmp_file_[bins_processed_].size();
-		// consider using more bins here
-		while (end < bins() && (size + (current_size = count_[end])) * sizeof(Hit) < max_size && (end - bins_processed_ == 0)) {
-			size += current_size;
-			disk_size += tmp_file_[end].size();
-			++end;
+		size_t size = 0, disk_size = 0;
+		for (int i = begin; i < end; ++i) {
+			size += count_[i];
+			disk_size += tmp_file_[i].size();
 		}
-		*log_stream << "Async_buffer.load() " << size << " (" << (double)size * sizeof(Hit) / (1 << 30) << " GB, " << (double)disk_size / (1 << 30) << " GB on disk)" << endl;
+		*log_stream << "Async_buffer.load() bins=[" << begin << ',' << end << ") " << size << " (" << (double)size * sizeof(Hit) / (1 << 30) << " GB, " << (double)disk_size / (1 << 30) << " GB on disk)" << endl;
 		total_disk_size_ += disk_size;
 		data_size_next_ = size;
 		load_worker_ = new thread(worker, end);
@@ -321,12 +337,13 @@ void HitBuffer::load_bin(Hit* out, int bin)
 }
 
 void HitBuffer::alloc_buffer() {
+	MEM_SCOPE("align/trace-point-buffer");
 	mmap_finished_ = mmap_loading_ = false;
 	if (config.trace_pt_membuf)
 		return;
 	int64_t max_size = 0;
-	for (int i = 0; i < bins(); ++i)
-		max_size = std::max(max_size, bin_size(i));
+	for (int b = 0; b < bins(); b = group_end(b))
+		max_size = std::max(max_size, group_size(b));
 	alloc_size_ = max_size;
 	if (max_size == 0) {
 		data_loading_ = data_finished_ = nullptr;
@@ -351,6 +368,10 @@ void HitBuffer::alloc_buffer() {
 		data_loading_ = new Hit[max_size];
 		mmap_loading_ = false;
 	}
+	if (mmap_finished_)
+		MEM_ADD("align/trace-point-buffer", max_size * (int64_t)sizeof(Hit));
+	if (mmap_loading_)
+		MEM_ADD("align/trace-point-buffer", max_size * (int64_t)sizeof(Hit));
 #endif
 }
 
@@ -360,12 +381,16 @@ void HitBuffer::free_buffer() {
 		delete[] data_loading_;
 		delete[] data_finished_;
 #else
-		if (mmap_finished_)
+		if (mmap_finished_) {
+			MEM_SUB("align/trace-point-buffer", alloc_size_ * (int64_t)sizeof(Search::Hit));
 			munmap(data_finished_, alloc_size_ * sizeof(Search::Hit));
+		}
 		else
 			delete[] data_finished_;
-		if (mmap_loading_)
+		if (mmap_loading_) {
+			MEM_SUB("align/trace-point-buffer", alloc_size_ * (int64_t)sizeof(Search::Hit));
 			munmap(data_loading_, alloc_size_ * sizeof(Search::Hit));
+		}
 		else
 			delete[] data_loading_;
 #endif

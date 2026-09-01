@@ -27,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "stats/score_matrix.h"
 #include "align/def.h"
 #include "stats/stats.h"
+#include "util/memory/mem_profile.h"
 
 using std::list;
 using std::vector;
@@ -124,10 +125,10 @@ static void swipe_threads(DP::AnchoredSwipe::Target<int16_t>* targets, int64_t c
 	Target* i0 = targets, *i1 = targets, *end = targets + count;
 	while (i1 < end) {
 		const auto n = std::min((ptrdiff_t)16, end - i1);
-		size += accumulate(i1, i1 + n, (int64_t)0, [](int64_t n, const Target& t) {return n + t.gross_cells(); });
+		size += accumulate(i1, i1 + n, (int64_t)0, [](int64_t n, const Target& t) { return n + t.gross_cells(); });
 		i1 += n;
 		if (size >= config.swipe_task_size) {
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 			task_set.enqueue(DP::AnchoredSwipe::DISPATCH_ARCH::smith_waterman<::DISPATCH_ARCH::ScoreVector<int16_t, 0>>, i0, i1 - i0, options);
 #endif
 			cfg.stats.inc(Statistics::SWIPE_TASKS_TOTAL);
@@ -138,7 +139,7 @@ static void swipe_threads(DP::AnchoredSwipe::Target<int16_t>* targets, int64_t c
 	}
 	if (task_set.total() == 0) {
 		cfg.stats.inc(Statistics::SWIPE_TASKS_TOTAL);
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 		DP::AnchoredSwipe::DISPATCH_ARCH::smith_waterman<::DISPATCH_ARCH::ScoreVector<int16_t, 0>>(i0, i1 - i0, options);
 #endif
 		return;
@@ -146,22 +147,16 @@ static void swipe_threads(DP::AnchoredSwipe::Target<int16_t>* targets, int64_t c
 	if (i1 - i0 > 0) {
 		cfg.stats.inc(Statistics::SWIPE_TASKS_TOTAL);
 		cfg.stats.inc(Statistics::SWIPE_TASKS_ASYNC);
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 		task_set.enqueue(DP::AnchoredSwipe::DISPATCH_ARCH::smith_waterman<::DISPATCH_ARCH::ScoreVector<int16_t, 0>>, i0, i1 - i0, options);
 #endif
 	}
 	task_set.run();
 }
 
-const ScoreMatrix& select_matrix(int qlen) {
-	//if (qlen < 35) return pam30;
-	//if (qlen <= 50)return pam70;
-	//if (qlen <= 85)return blosum80;
-	return score_matrix;
-}
-
-list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg, std::pmr::monotonic_buffer_resource& pool) {
-#if ARCH_ID != 2
+list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg, std::pmr::memory_resource& pool) {
+	MEM_SCOPE("dp/anchored-swipe");
+#if !ARCH_AVX2_KERNELS
 	throw runtime_error("Anchored SWIPE requires at least AVX2 support");
 #endif
 	TaskTimer total;
@@ -188,9 +183,10 @@ list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg,
 	timer.go();
 	unique_ptr<Profiles> profiles, profiles_rev;
 	vector<const int16_t*> prof_pointers, prof_pointers_rev;
-	const ScoreMatrix& matrix = score_matrix; // select_matrix(cfg.query.length());
+	const ScoreMatrix& matrix = score_matrix;
 
 	if (!cfg.target_profiles) {
+		MEM_SCOPE("dp/query-profile");
 		profiles.reset(new Profiles(cfg.query, cfg.query_cbs, cfg.query.length() + max_target_len + 32, matrix));
 		profiles_rev.reset(new Profiles(*profiles, Profiles::Reverse()));
 		prof_pointers = profiles->int16.pointers(0);
@@ -319,7 +315,7 @@ list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg,
 	cfg.stats.inc(Statistics::TIME_ANCHORED_SWIPE, total.microseconds());
 	if (cfg.recompute_adjusted) {
 		DP::Params params{ cfg.query, nullptr, Frame(0), cfg.query.length(), nullptr, DP::Flags::NONE, false,
-		0, 0, HspValues::COORDS, cfg.stats, cfg.thread_pool };
+		0, 0, HspValues::COORDS, cfg.stats, cfg.thread_pool, &pool };
 		out.splice(out.end(), DP::BandedSwipe::swipe(recompute, params));
 		return out;
 	}
@@ -328,6 +324,6 @@ list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg,
 
 }
 
-DISPATCH_3(std::list<Hsp>, anchored_swipe, Targets&, targets, const DP::AnchoredSwipe::Config&, cfg, std::pmr::monotonic_buffer_resource&, pool)
+DISPATCH_3(std::list<Hsp>, anchored_swipe, Targets&, targets, const DP::AnchoredSwipe::Config&, cfg, std::pmr::memory_resource&, pool)
 
 }}

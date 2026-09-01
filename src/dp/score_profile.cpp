@@ -38,7 +38,7 @@ LongScoreProfile<Score> make_profile(Sequence seq, const int8_t* cbs, int64_t pa
 		const int8_t* scores = &matrix.matrix8()[l << 5];
 		p.data[l].reserve(round_up(seq.length(), 32) + 2 * p.padding);
 		p.data[l].insert(p.data[l].end(), p.padding, -1);
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 		using Sv = ::DISPATCH_ARCH::ScoreVector<int8_t, 0>;
 		constexpr auto CHANNELS = ::DISPATCH_ARCH::ScoreTraits<Sv>::CHANNELS;
 		alignas(32) array<Score, CHANNELS> buf;
@@ -73,7 +73,7 @@ LongScoreProfile<Score> make_profile(Sequence seq, const Stats::TargetMatrix& ma
 		const int8_t* scores = &matrix.scores[l << 5];
 		p.data[l].reserve(round_up(seq.length(), 32) + 2 * p.padding);
 		p.data[l].insert(p.data[l].end(), p.padding, -1);
-/*#if ARCH_ID == 2
+/*#if ARCH_AVX2_KERNELS
 		using Sv = ::DISPATCH_ARCH::ScoreVector<int8_t, 0>;
 		constexpr auto CHANNELS = ::DISPATCH_ARCH::ScoreTraits<Sv>::CHANNELS;
 		alignas(32) array<Score, CHANNELS> buf;

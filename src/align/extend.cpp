@@ -35,6 +35,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "search/hit.h"
 #include "load_hits.h"
 #include "def.h"
+#include "util/memory/mem_profile.h"
 
 using std::accumulate;
 using std::vector;
@@ -59,13 +60,14 @@ const SEMap<Extension::Mode> EnumTraits<Extension::Mode>::from_string = {
 
 namespace Extension {
 
-Query::Query(BlockId block_id, Statistics& stats, const Search::Config& cfg, std::pmr::monotonic_buffer_resource& pool) :
+Query::Query(BlockId block_id, Statistics& stats, const Search::Config& cfg, std::pmr::memory_resource& pool) :
 	block_id(block_id),
 	title(cfg.query->ids()[block_id]),
 	source_length(align_mode.query_translated ? (int)cfg.query->source_seqs()[block_id].length() : (int)cfg.query->seqs()[block_id].length()),
 	true_aa_length(0),
 	self_alignment_score(cfg.query->has_self_aln() ? cfg.query->self_aln_score(block_id) : 0.0)
 {
+	MEM_SCOPE("extend/query");
 	const unsigned contexts = align_mode.query_contexts;
 	sequence.reserve(contexts);
 	for (unsigned i = 0; i < contexts; ++i)
@@ -92,6 +94,7 @@ Query::Query(BlockId block_id, Statistics& stats, const Search::Config& cfg, std
 	if ((config.reseek_diags || config.lin_stage1_query || config.lin_stage1_target) && (cfg.extension_mode == Extension::Mode::BANDED_FAST || cfg.extension_mode == Extension::Mode::BANDED_SLOW)) {
 		if (sequence.size() > 1)
 			throw runtime_error("Reseeking diagonals is not supported for translated queries.");
+		MEM_SCOPE("extend/query-seqindex");
 		seqindex.reset(new Seqindex(sequence.front(), cfg.keyword_length, cfg.keyword_threshold, pool, stats));
 	}
 }
@@ -113,7 +116,7 @@ const std::map<Sensitivity, Mode> default_ext_mode = {
 
 constexpr int64_t MAX_CHUNK_SIZE = 400, MIN_CHUNK_SIZE = 128, MAPANY_CHUNK_SIZE = 16;
 
-int64_t ranking_chunk_size(int64_t target_count, const int64_t ref_letters, const int64_t max_target_seqs) {
+static int64_t ranking_chunk_size(int64_t target_count, const int64_t ref_letters, const int64_t max_target_seqs) {
 	if (config.no_ranking || config.global_ranking_targets > 0)
 		return target_count;
 	if (config.ext_chunk_size > 0)
@@ -171,7 +174,6 @@ static bool add_self_aln(const Search::Config& cfg) {
 	return config.add_self_aln && ((config.self && cfg.current_ref_block == 0) || (!config.self && cfg.current_query_block == cfg.current_ref_block));
 }
 
-
 static Hsp seed_only_hsp(const SeedHit& hit, unsigned query_source_len) {
 	Hsp hsp;
 	hsp.seed_only = true;
@@ -202,6 +204,7 @@ static vector<Match> seed_only_matches(const Query& query, const Search::Config&
 }
 
 static size_t lazy_masking(std::vector<uint32_t>::const_iterator target_block_ids, vector<uint32_t>::const_iterator target_block_ids_end, Block& targets, const MaskingAlgo algo) {
+	MEM_SCOPE("extend/lazy-masking");
 	if (algo == MaskingAlgo::NONE)
 		return 0;
 	vector<Letter> seq;
@@ -216,7 +219,7 @@ static size_t lazy_masking(std::vector<uint32_t>::const_iterator target_block_id
 	return n;
 }
 
-static vector<Target> extend_chunk(const Query& query,
+static TargetList extend_chunk(const Query& query,
 	FlatArray<SeedHit>::Iterator seed_hits,
 	FlatArray<SeedHit>::Iterator seed_hits_end,
 	vector<uint32_t>::const_iterator target_block_ids,
@@ -224,7 +227,7 @@ static vector<Target> extend_chunk(const Query& query,
 	Statistics& stat,
 	DP::Flags flags,
 	const HspValues hsp_values,
-	std::pmr::monotonic_buffer_resource& pool)
+	std::pmr::memory_resource& pool)
 {
 	static const Loc GAPPED_FILTER_MIN_QLEN = 85;
 	const int64_t n = seed_hits_end - seed_hits;
@@ -261,7 +264,7 @@ vector<Match> extend(
 	Statistics& stat,
 	DP::Flags flags,
 	SeedHitList& l,
-	std::pmr::monotonic_buffer_resource& pool)
+	std::pmr::memory_resource& pool)
 {
 	const unsigned UNIFIED_TARGET_LEN = 50;
 	if (config.log_query || (flag_any(flags, DP::Flags::PARALLEL) && !config.swipe_all))
@@ -269,7 +272,7 @@ vector<Match> extend(
 
 	const unsigned query_len = (unsigned)query.sequence.front().length();
 	const size_t target_count = l.target_block_ids.size();
-	if (cfg.extension_mode == Mode::NONE) { 		std::sort(l.target_scores.begin(), l.target_scores.end()); 		return seed_only_matches(query, cfg, l); 	}
+	if (cfg.extension_mode == Mode::NONE) { std::sort(l.target_scores.begin(), l.target_scores.end()); return seed_only_matches(query, cfg, l); }
 	const int64_t chunk_size = ranking_chunk_size(target_count, cfg.target->seqs().letters(), cfg.max_target_seqs);
 	vector<TargetScore>::const_iterator i0 = l.target_scores.cbegin(), i1 = i0 + std::min((ptrdiff_t)chunk_size, l.target_scores.cend() - i0);
 
@@ -292,7 +295,7 @@ vector<Match> extend(
 
 	do {
 
-		vector<Target> aligned_targets;
+		TargetList aligned_targets(&pool);
 		bool new_hits;
 
 		do {
@@ -300,6 +303,7 @@ vector<Match> extend(
 			const bool multi_chunk = current_chunk_size < (int64_t)l.target_scores.size();
 
 			if (multi_chunk) {
+				MEM_SCOPE("extend/chunk-buffers");
 				target_block_ids_chunk.clear();
 				seed_hits_chunk.clear();
 				target_block_ids_chunk.reserve(i1 - i0);
@@ -310,7 +314,7 @@ vector<Match> extend(
 				}
 			}
 
-			vector<Target> v = extend_chunk(
+			TargetList v = extend_chunk(
 				query,
 				multi_chunk ? seed_hits_chunk.begin() : l.seed_hits.begin(),
 				multi_chunk ? seed_hits_chunk.end() : l.seed_hits.end(),
@@ -336,14 +340,18 @@ vector<Match> extend(
 		} while (i0 < l.target_scores.cend() && !ranking_terminate(new_hits, previous_tail_score, (i1 - 1)->score, i1 - l.target_scores.cbegin(), aligned_targets.size()));
 
 		if (config.swipe_all)
-			aligned_targets = full_db_align(query, flags, HspValues::NONE, stat, *cfg.target);
+			aligned_targets = full_db_align(query, flags, HspValues::NONE, stat, *cfg.target, pool);
 
 		culling(aligned_targets, !first_round_culling, cfg);
 		stat.inc(Statistics::TARGET_HITS5, aligned_targets.size());
 		
-		vector<Match> round_matches = align(aligned_targets, matches.size(), query, flags, first_round_hspv, first_round_culling, stat, cfg);
-		matches.insert(matches.end(), make_move_iterator(round_matches.begin()), make_move_iterator(round_matches.end()));
-	} while (config.toppercent.blank() && (int64_t)matches.size() < config.max_target_seqs_.get(DEFAULT_MAX_TARGET_SEQS) && i0 < l.target_scores.cend() && new_hits_ev && (!config.mapany || (config.mapany && matches.empty())));
+		{
+			MEM_SCOPE("extend/matches");
+			vector<Match> round_matches = align(aligned_targets, matches.size(), query, flags, first_round_hspv, first_round_culling, stat, cfg, pool);
+			matches.insert(matches.end(), make_move_iterator(round_matches.begin()), make_move_iterator(round_matches.end()));
+		}
+	} while (config.toppercent.blank() && (int64_t)matches.size() < config.max_target_seqs_.get(DEFAULT_MAX_TARGET_SEQS)
+		&& i0 < l.target_scores.cend() && new_hits_ev && (!config.mapany || (config.mapany && matches.empty())));
 
 	if (add_self_aln(cfg) && !any_of(matches.cbegin(), matches.cend(), [&query](const Match& m) { return m.target_block_id == query.block_id; }))
 		matches.push_back(Match::self_match(query.block_id, query.sequence[0]));
@@ -353,16 +361,12 @@ vector<Match> extend(
 	return matches;
 }
 
-vector<Match> extend(BlockId query_id, Search::Hit* begin, Search::Hit* end, const Search::Config &cfg, Statistics &stat, DP::Flags flags, std::pmr::monotonic_buffer_resource& pool) {
+vector<Match> extend(BlockId query_id, Search::Hit* begin, Search::Hit* end, const Search::Config &cfg, Statistics &stat, DP::Flags flags, std::pmr::memory_resource& pool) {
 	const Query query(query_id, stat, cfg, pool);
 	TaskTimer timer(flag_any(flags, DP::Flags::PARALLEL) ? config.target_parallel_verbosity : UINT_MAX);
 	timer.go("Loading seed hits");
 	SeedHitList l = load_hits(begin, end, cfg.target->seqs());
 	stat.inc(Statistics::TARGET_HITS0, l.target_block_ids.size());
-	if (config.hamming_dist_boundary_check) {
-		filter_hamming_boundary_crossings(l, query.sequence.data(), query.sequence.front().length(), cfg.target->seqs(), cfg.hamming_filter_id);
-		stat.inc(Statistics::TARGET_HITS_HDF, l.target_block_ids.size());
-	}
 	stat.inc(Statistics::TIME_LOAD_HIT_TARGETS, timer.microseconds());
 	timer.finish();
 

@@ -102,36 +102,6 @@ private:
 	const char delimiter_;
 };
 
-/*struct MultiCharTokenizer : public TokenizerBase {
-	MultiCharTokenizer(const char* delimiter) :
-		delimiter_(delimiter)
-	{}
-	virtual MultiCharTokenizer* clone() const override
-	{
-		return new MultiCharTokenizer(delimiter_.c_str());
-	}
-	virtual std::string operator*() const override {
-		std::cout << std::string(ptr_, std::search(ptr_, end_, delimiter_.begin(), delimiter_.end())) << std::endl;
-		return std::string(ptr_, std::search(ptr_, end_, delimiter_.begin(), delimiter_.end()));
-	}
-	virtual ~MultiCharTokenizer() {}
-	virtual MultiCharTokenizer& operator++() override {
-		ptr_ = std::search(ptr_, end_, delimiter_.begin(), delimiter_.end());
-#ifndef NDEBUG
-		if (ptr_ < end_)
-#endif
-			ptr_ += delimiter_.length();
-		return *this;
-	}
-private:
-	const std::string delimiter_;
-};
-
-inline TokenizerBase* make_tokenizer(const std::string& delimiter) {
-	assert(!delimiter.empty());
-	return delimiter.length() == 1 ? static_cast<TokenizerBase*>(new CharTokenizer(delimiter[0])) : static_cast<TokenizerBase*>(new MultiCharTokenizer(delimiter.c_str()));
-}*/
-
 template<typename It, char delimiter>
 struct TokenIterator {
 	TokenIterator(It begin, It end) :

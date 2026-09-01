@@ -69,6 +69,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <new>
 #include <type_traits>
 #include <utility>
+#include "mem_profile.h"
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -223,7 +224,7 @@ public:
     VmBuffer(VmBuffer&& o) noexcept
         : base_(o.base_), size_(o.size_), committed_(o.committed_),
           reserved_(o.reserved_), gran_(o.gran_), hps_(o.hps_), huge_(o.huge_),
-          fixed_(o.fixed_) {
+          fixed_(o.fixed_), cat_(o.cat_) {
         o.disown();
     }
 
@@ -232,7 +233,7 @@ public:
             reset();
             base_ = o.base_;  size_ = o.size_;  committed_ = o.committed_;
             reserved_ = o.reserved_;  gran_ = o.gran_;  huge_ = o.huge_;
-            hps_ = o.hps_;  fixed_ = o.fixed_;
+            hps_ = o.hps_;  fixed_ = o.fixed_;  cat_ = o.cat_;
             o.disown();
         }
         return *this;
@@ -305,7 +306,7 @@ public:
         const std::size_t from = activated ? 0 : committed_;
         if (!detail::commit(base_ + from, want - from, huge_))
             throw std::bad_alloc();
-        committed_ = want;
+        charge(want);
     }
 
     void resize(std::size_t n) {
@@ -319,7 +320,7 @@ public:
         const std::size_t want = detail::round_up(size_, gran_);
         if (want >= committed_) return;
         detail::decommit(base_ + want, committed_ - want);
-        committed_ = want;
+        charge(want);
     }
 
     void clear() noexcept { size_ = 0; }
@@ -332,8 +333,9 @@ public:
 
     void reset() noexcept {
         if (base_) detail::release(base_, reserved_);
+        charge(0);
         base_ = nullptr;
-        size_ = committed_ = reserved_ = 0;
+        size_ = reserved_ = 0;
         // Back to base pages; a reused buffer re-earns huge-page granularity by
         // growing into it again. The requested mode (hps_) is kept.
         huge_ = false;
@@ -347,6 +349,18 @@ private:
         RESERVE_FACTOR = 2,
         MIN_RESERVE    = std::size_t(1) << 20
     };
+
+    // Committed pages come from the OS, not from operator new, so the memory
+    // profiler only sees them if they are booked here. The category is taken at
+    // the first commit and kept, so that a decommit is credited back to whoever
+    // grew the buffer rather than to whoever happened to shrink it.
+    void charge(std::size_t n) noexcept {
+        if (n == committed_) return;
+        if (committed_ == 0) cat_ = MemProfile::current();
+        if (n > committed_) MemProfile::add(cat_, (int64_t)(n - committed_));
+        else                MemProfile::sub(cat_, (int64_t)(committed_ - n));
+        committed_ = n;
+    }
 
     void set_mode(HugePages hp) noexcept {
         hps_  = (hp == HugePages::Transparent) ? detail::huge_page_size() : 0;
@@ -371,6 +385,8 @@ private:
         return true;
     }
 
+    // The charge went with the memory to the buffer that took it over, so the
+    // counters must not be touched here.
     void disown() noexcept {
         base_ = nullptr;
         size_ = committed_ = reserved_ = 0;
@@ -394,7 +410,7 @@ private:
         if (base_) detail::release(base_, reserved_);
         base_      = nb;
         reserved_  = res;
-        committed_ = want_commit;
+        charge(want_commit);
     }
 
     unsigned char* base_      = nullptr;
@@ -405,6 +421,7 @@ private:
     std::size_t    hps_       = 0;   // huge page size if requested & available
     bool           huge_      = false;  // gran_ == hps_
     bool           fixed_     = false;  // reservation is a hard ceiling
+    int            cat_       = 0;      // memory profiler category of committed_
 };
 
 // std::vector-like view of a VmBuffer for trivially copyable elements.

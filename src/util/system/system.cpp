@@ -448,6 +448,58 @@ pair<string, string> absolute_path(const std::string& file_path) {
 #endif
 }
 
+#ifdef WIN32
+// System messages come with trailing punctuation and line breaks that would be repeated
+// by the surrounding sentence.
+static string system_message(DWORD error) {
+	string s = std::system_category().message((int)error);
+	while (!s.empty() && (s.back() == '.' || s.back() == ' ' || s.back() == '\r' || s.back() == '\n'))
+		s.pop_back();
+	return s;
+}
+#endif
+
+string file_open_error(const string& file_name) {
+	const int err = errno;
+#ifdef WIN32
+	const DWORD win_err = GetLastError();
+#endif
+	string msg = string(std::strerror(err)) + " (errno " + std::to_string(err) + ")";
+	const pair<string, string> dir_base = absolute_path(file_name);
+	string full = dir_base.first;
+	if (!full.empty() && !dir_base.second.empty()) {
+		if (full.back() != PATH_SEPARATOR)
+			full += PATH_SEPARATOR;
+		full += dir_base.second;
+	}
+	if (!full.empty() && full != file_name)
+		msg += ". Resolved path: " + full;
+#ifdef WIN32
+	msg += ". Win32 error " + std::to_string(win_err) + ": " + system_message(win_err);
+	if (full.size() >= MAX_PATH)
+		msg += ". The path is " + std::to_string(full.size()) + " characters long, exceeding the Windows MAX_PATH limit of " + std::to_string(MAX_PATH);
+	if (!full.empty()) {
+		const DWORD attr = GetFileAttributesW(widen_utf8(full).c_str());
+		if (attr == INVALID_FILE_ATTRIBUTES) {
+			msg += ". Nothing found at the path (GetFileAttributes: " + system_message(GetLastError()) + ")";
+			if (!dir_base.first.empty() && GetFileAttributesW(widen_utf8(dir_base.first).c_str()) == INVALID_FILE_ATTRIBUTES)
+				msg += ", and the containing directory " + dir_base.first + " does not exist either";
+		}
+		else if (attr & FILE_ATTRIBUTE_DIRECTORY)
+			msg += ". The path is a directory, not a file";
+		else {
+			if (attr & FILE_ATTRIBUTE_READONLY)
+				msg += ". The file is marked read-only";
+			msg += ". The file is present but could not be opened: it is most likely held with an exclusive share mode by another process, or not accessible to this user";
+		}
+	}
+#else
+	if (!dir_base.first.empty() && !exists(dir_base.first))
+		msg += ". The containing directory " + dir_base.first + " does not exist";
+#endif
+	return msg;
+}
+
 bool stdout_is_a_tty() {
 #if defined(_WIN32)
 	HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);

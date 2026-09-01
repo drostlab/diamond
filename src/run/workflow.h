@@ -28,6 +28,7 @@ void random_seqs();
 
 namespace Search {
 
-void run(std::unique_ptr<std::vector<BitVector>>& target_seed_hits, const std::shared_ptr<SequenceFile>& db = nullptr, const std::shared_ptr<SequenceFile>& query = nullptr, const std::shared_ptr<File>& out = nullptr, const std::shared_ptr<DbFilter>& db_filter = nullptr);
+void run(std::unique_ptr<std::vector<BitVector>>& target_seed_hits, const std::shared_ptr<SequenceFile>& db = nullptr, const std::shared_ptr<SequenceFile>& query = nullptr,
+	const std::shared_ptr<File>& out = nullptr, const std::shared_ptr<DbFilter>& db_filter = nullptr);
 
 }

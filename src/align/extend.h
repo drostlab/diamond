@@ -37,7 +37,7 @@ namespace Extension {
 extern const std::map<Sensitivity, Mode> default_ext_mode;
 
 struct Query {
-	Query(BlockId block_id, Statistics& stats, const Search::Config& cfg, std::pmr::monotonic_buffer_resource& pool);
+	Query(BlockId block_id, Statistics& stats, const Search::Config& cfg, std::pmr::memory_resource& pool);
 
 	const int8_t* composition_bias(int context) const {
 		return hauser_correction.empty() ? nullptr : hauser_correction[context].int8.data();
@@ -87,7 +87,7 @@ struct Match {
 	std::list<Hsp> hsp;
 };
 
-std::vector<Match> extend(BlockId query_id, Search::Hit* begin, Search::Hit* end, const Search::Config &cfg, Statistics &stat, DP::Flags flags, std::pmr::monotonic_buffer_resource& pool);
+std::vector<Match> extend(BlockId query_id, Search::Hit* begin, Search::Hit* end, const Search::Config &cfg, Statistics &stat, DP::Flags flags, std::pmr::memory_resource& pool);
 TextBuffer* generate_output(std::vector<Match> &targets, BlockId query_block_id, Statistics &stat, const Search::Config& cfg);
 TextBuffer* generate_intermediate_output(const std::vector<Match> &targets, BlockId query_block_id, const Search::Config& cfg);
 

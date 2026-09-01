@@ -18,69 +18,23 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
-#include <stdint.h>
-#include "../simd.h"
+#include "util/simd.h"
 
-namespace DISPATCH_ARCH { namespace SIMD {
+namespace Util { namespace tantan {
 
-template<>
-struct Vector<int8_t> {
-
-	static constexpr size_t CHANNELS = 32;
-
-	Vector()
-	{}
-
-	Vector(const signed char* p) :
-		v(_mm512_loadu_si512((const __m512i*)p))
-	{}
-
-	operator __m512i() const {
-		return v;
-	}
-
-	__m512i v;
-
-};
-
-template<>
-struct Vector<int16_t> {
-
-	static constexpr size_t CHANNELS = 16;
-
-	Vector()
-	{}
-
-	Vector(const int16_t* p) :
-		v(_mm256_loadu_si256((const __m256i*)p))
-	{}
-
-	operator __m256i() const {
-		return v;
-	}
-
-	__m256i v;
-
-};
-
-template<>
-struct Vector<int32_t> {
-
-	static constexpr size_t CHANNELS = 1;
-
-	Vector()
-	{}
-
-	Vector(const int32_t* p) :
-		v(*p)
-	{}
-
-	operator int32_t() const {
-		return v;
-	}
-
-	int32_t v;
-
-};
+static constexpr int WINDOW = 50;
+static constexpr int WINDOW_ALIGN = 64;
 
 }}
+
+#if ARCH_ID == 3 && defined(WITH_AVX512_WIDE)
+#include "tantan_step_avx512.h"
+#elif ARCH_ID == 2
+#include "tantan_step_avx2.h"
+#elif defined(__ARM_NEON)
+#include "tantan_step_neon.h"
+#elif defined(__SSE2__)
+#include "tantan_step_sse.h"
+#else
+#include "tantan_step_generic.h"
+#endif

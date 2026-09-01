@@ -35,30 +35,20 @@ using std::endl;
 using std::runtime_error;
 using std::string;
 
-void opt();
 void run_masker();
 void fastq2fasta();
 void view_daa();
 void db_info();
-void benchmark_sw();
-void db_annot_stats();
 void info();
-void seed_stat();
 void pairwise();
 void reverse();
 void makeindex();
 void hash_seqs();
+void count_distinct();
 void list_seeds();
 void merge_daa();
 void composition_matrix_workflow();
 void multinode();
-#ifdef EXTRA
-namespace Cluster {
-#ifdef WITH_FAMSA
-	void profile_recluster();
-#endif
-}
-#endif
 
 void split();
 namespace Benchmark { void benchmark(); }
@@ -71,8 +61,20 @@ void recluster();
 namespace Incremental {
 }}
 
+struct QuoteSeparator : std::numpunct<char> {
+protected:
+	char do_thousands_sep() const override {
+		return '\'';
+	}
+	std::string do_grouping() const override {
+		return "\3";
+	}
+};
+
 int main(int ac, const char* av[])
 {
+	std::locale custom_locale(std::cerr.getloc(), new QuoteSeparator);
+	std::cerr.imbue(custom_locale);
 	std::unique_ptr<std::vector<BitVector>> target_seed_hits;
 	std::set_terminate([]() noexcept {
 		std::abort();
@@ -127,7 +129,6 @@ int main(int ac, const char* av[])
 		case Config::DEEPCLUST:
 		case Config::LINCLUST:
 #ifdef WITH_MCL
-			// Why is cluster_similarity not set at the end of the Config constructor?
 			if(!config.cluster_similarity.empty()){
 				string expression = RecursiveParser::clean_expression(&config.cluster_similarity);
 				RecursiveParser rp(nullptr, expression.c_str());
@@ -198,15 +199,13 @@ int main(int ac, const char* av[])
 		case Config::MERGE_DAA:
 			merge_daa();
 			break;
+		case Config::COUNT_DISTINCT:
+			count_distinct();
+			break;
 #ifdef EXTRA
         case Config::blastn:
             Search::run(target_seed_hits);
             break;
-#ifdef WITH_FAMSA
-		case Config::PROFILE_RECLUSTER:
-			Cluster::profile_recluster();
-			break;
-#endif
 #endif
 		default:
 			return 1;

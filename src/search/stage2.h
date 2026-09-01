@@ -25,7 +25,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "dp/ungapped_simd.h"
 #include "left_most.h"
 #include "run/config.h"
-#include "util/simd/vector.h"
+#include "dp/score_vector.h"
+#include "dp/score_vector_int8.h"
 #include "data/block/block.h"
 
 using std::vector;
@@ -78,7 +79,8 @@ static void search_query_offset(const SeedLoc& q,
 	int pivot_code,
 	WorkSet& work_set)
 {
-	constexpr int N = ::DISPATCH_ARCH::SIMD::Vector<int8_t>::LANES;
+	constexpr int CHANNELS = ::DISPATCH_ARCH::ScoreTraits<::DISPATCH_ARCH::ScoreVector<int8_t, SCHAR_MIN>>::CHANNELS;
+	constexpr int N = CHANNELS > 0 ? CHANNELS : 1;
 	const SequenceSet& ref_seqs = work_set.cfg.target->seqs(), &query_seqs = work_set.cfg.query->seqs();
 	const Letter* query = query_seqs.data(q);
 

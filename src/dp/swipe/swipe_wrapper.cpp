@@ -24,7 +24,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <numeric>
 #include "../score_vector_int16.h"
 #include "../score_vector_int8.h"
-#include "util/simd/vector.h"
 #include "../dp.h"
 #include "util/log_stream.h"
 #include "data/sequence_set.h"
@@ -36,6 +35,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "banded_swipe.h"
 #include "stats/hauser_correction.h"
 #include "stats/stats.h"
+#include "util/memory/mem_profile.h"
 
 using std::unique_ptr;
 using std::list;
@@ -210,6 +210,7 @@ static void swipe_worker(const It begin, const It end, atomic<BlockId>* const ne
 		p->swipe_bin,
 		p->v,
 		stat2,
+		nullptr,
 		nullptr
 	};
 	if (flag_any(p->flags, Flags::FULL_MATRIX))
@@ -242,6 +243,7 @@ static void swipe_task(const It begin, const It end, list<Hsp> *out, TargetVec *
 		p->swipe_bin,
 		p->v,
 		stat2,
+		nullptr,
 		nullptr
 	};
 	list<Hsp> hsp = dispatch_swipe<Sv, It>(begin, end, &next, of, round, bin, params);
@@ -402,7 +404,8 @@ static list<Hsp> recompute_reversed(list<Hsp> &hsps, Params& p) {
 		p.swipe_bin,
 		p.v,
 		p.stat,
-		p.thread_pool
+		p.thread_pool,
+		p.pool
 	};
 	list<Hsp> out;
 #ifndef STRICT_BAND
@@ -428,7 +431,7 @@ static list<Hsp> recompute_reversed(list<Hsp> &hsps, Params& p) {
 					if(hsp.swipe_target == it->target_idx) {
 						(*overflow_targets)[bin + 1].emplace_back(hsp.target_seq, hsp.target_seq.length(), hsp.d_begin, hsp.d_end, hsp.swipe_target, p.query.length(), hsp.matrix, DpTarget::CarryOver());
 					}
-				}				
+				}
 			}
 #endif
 		}
@@ -445,6 +448,7 @@ static list<Hsp> recompute_reversed(list<Hsp> &hsps, Params& p) {
 
 list<Hsp> swipe(const Targets &targets, Params& p)
 {
+	MEM_SCOPE("dp/swipe");
 	pair<list<Hsp>, TargetVec> result;
 	list<Hsp> out, out_tmp;
 	for (int algo_bin = 0; algo_bin < ALGO_BINS; ++algo_bin) {

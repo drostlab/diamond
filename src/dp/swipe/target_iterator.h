@@ -21,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdint.h>
 #include "../dp.h"
 #include "basic/value.h"
+#include "../score_vector.h"
 #include "util/data_structures/array.h"
 
 template<typename T, int N>
@@ -56,13 +57,13 @@ private:
 
 namespace DISPATCH_ARCH {
 
-template<typename T>
+template<typename Sv>
 struct TargetIterator
 {
 
-	typedef ::DISPATCH_ARCH::SIMD::Vector<T> SeqVector;
+	typedef typename ScoreTraits<Sv>::Score Score;
 	enum {
-		LANES = SeqVector::LANES
+		LANES = ScoreTraits<Sv>::CHANNELS
 	};
 
 	TargetIterator(DP::TargetVec::const_iterator subject_begin, DP::TargetVec::const_iterator subject_end, bool reverse_targets, int i1, int qlen, int *d_begin) :
@@ -110,15 +111,15 @@ struct TargetIterator
 	}
 
 
-	SeqVector get() const
+	Sv get() const
 	{
-		alignas(32) T s[LANES];
-		std::fill(s, s + LANES, SUPER_HARD_MASK);
+		alignas(32) Score s[LANES];
+		std::fill(s, s + LANES, (Score)SUPER_HARD_MASK);
 		for (int i = 0; i < active.size(); ++i) {
 			const int channel = active[i];
-			s[channel] = (*this)[channel];
+			s[channel] = (Score)(*this)[channel];
 		}
-		return SeqVector(s);
+		return load_sv<Sv>(s);
 	}
 
 	const int8_t** get(const int8_t** target_scores) const {
@@ -172,12 +173,12 @@ struct TargetIterator
 	std::array<Array<Letter>, LANES> target_seqs;
 };
 
-template<typename T, typename It>
+template<typename Sv, typename It>
 struct AsyncTargetBuffer
 {
 
-	typedef ::DISPATCH_ARCH::SIMD::Vector<T> SeqVector;
-	enum { LANES = SeqVector::LANES };
+	typedef typename ScoreTraits<Sv>::Score Score;
+	enum { LANES = ScoreTraits<Sv>::CHANNELS };
 
 	AsyncTargetBuffer(const It begin, const It end, Loc max_target_len, bool reverse_targets, std::atomic<BlockId>* const next):
 		reverse_targets(reverse_targets),
@@ -220,15 +221,15 @@ struct AsyncTargetBuffer
 			return SUPER_HARD_MASK;
 	}
 
-	SeqVector seq_vector() const
+	Sv seq_vector() const
 	{
-		alignas(32) T s[LANES];
-		std::fill(s, s + LANES, SUPER_HARD_MASK);
+		alignas(32) Score s[LANES];
+		std::fill(s, s + LANES, (Score)SUPER_HARD_MASK);
 		for (int i = 0; i < active.size(); ++i) {
 			const int channel = active[i];
-			s[channel] = (*this)[channel];
+			s[channel] = (Score)(*this)[channel];
 		}
-		return SeqVector(s);
+		return load_sv<Sv>(s);
 	}
 
 	const int8_t** get(const int8_t** target_scores) const {

@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "target.h"
 #include "util/parallel/thread_pool.h"
 #include "dp/scan_diags.h"
+#include "util/memory/mem_profile.h"
 
 using std::mutex;
 using std::vector;
@@ -30,7 +31,7 @@ using std::pair;
 
 namespace Extension {
 
-int gapped_filter(const SeedHit &hit, const LongScoreProfile<int8_t> *query_profile, const Sequence &target, int band, int window, std::function<decltype(DP::scan_diags128)> f) {	
+static int gapped_filter(const SeedHit &hit, const LongScoreProfile<int8_t> *query_profile, const Sequence &target, int band, int window, std::function<decltype(DP::scan_diags128)> f) {	
 	const int slen = (int)target.length();
 	const int d = std::max(hit.diag() - band / 2, -(slen - 1)),
 		j0 = std::max(hit.j - window, 0),
@@ -40,7 +41,8 @@ int gapped_filter(const SeedHit &hit, const LongScoreProfile<int8_t> *query_prof
 	return DP::diag_alignment(scores, band);
 }
 
-bool gapped_filter(FlatArray<SeedHit>::DataConstIterator begin, FlatArray<SeedHit>::DataConstIterator end, const LongScoreProfile<int8_t>*query_profile, uint32_t target_block_id, Statistics &stat, const Search::Config &params) {
+static bool gapped_filter(FlatArray<SeedHit>::DataConstIterator begin, FlatArray<SeedHit>::DataConstIterator end, const LongScoreProfile<int8_t>*query_profile,
+	uint32_t target_block_id, Statistics &stat, const Search::Config &params) {
 	constexpr int window1 = 100, MIN_STAGE2_QLEN = 100;
 		
 	const int qlen = (int)query_profile->length();
@@ -61,7 +63,8 @@ bool gapped_filter(FlatArray<SeedHit>::DataConstIterator begin, FlatArray<SeedHi
 	return false;
 }
 
-void gapped_filter_worker(size_t i, size_t thread_id, const LongScoreProfile<int8_t>*query_profile, FlatArray<SeedHit>::Iterator seed_hits, vector<uint32_t>::const_iterator target_block_ids, FlatArray<SeedHit>* out, vector<uint32_t> *target_ids_out, mutex* mtx, const Search::Config *params) {
+void gapped_filter_worker(size_t i, size_t thread_id, const LongScoreProfile<int8_t>*query_profile, FlatArray<SeedHit>::Iterator seed_hits,
+	vector<uint32_t>::const_iterator target_block_ids, FlatArray<SeedHit>* out, vector<uint32_t> *target_ids_out, mutex* mtx, const Search::Config *params) {
 	thread_local Statistics stat;
 	if (gapped_filter(seed_hits.begin(i), seed_hits.end(i), query_profile, target_block_ids[i], stat, *params)) {
 		std::lock_guard<mutex> guard(*mtx);
@@ -70,7 +73,10 @@ void gapped_filter_worker(size_t i, size_t thread_id, const LongScoreProfile<int
 	}
 }
 
-pair<FlatArray<SeedHit>, vector<uint32_t>> gapped_filter(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end, vector<uint32_t>::const_iterator target_block_ids, Statistics& stat, DP::Flags flags, const Search::Config &params) {
+pair<FlatArray<SeedHit>, vector<uint32_t>> gapped_filter(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end,
+	vector<uint32_t>::const_iterator target_block_ids, Statistics& stat, DP::Flags flags, const Search::Config &params)
+{
+	MEM_SCOPE("extend/gapped-filter");
 	const int64_t n = seed_hits_end - seed_hits;
 	FlatArray<SeedHit> hits_out;
 	vector<uint32_t> target_ids_out;
@@ -81,7 +87,6 @@ pair<FlatArray<SeedHit>, vector<uint32_t>> gapped_filter(const Query& query, Fla
 	query_profile.reserve(align_mode.query_contexts);
 	for (int i = 0; i < align_mode.query_contexts; ++i)
 		query_profile.push_back(DP::make_profile8(query.sequence[i], query.composition_bias(i), 0));
-	
 	if(flag_any(flags, DP::Flags::PARALLEL)) {
 		mutex mtx;
 		Util::Parallel::scheduled_thread_pool_auto(config.threads_, n, gapped_filter_worker, query_profile.data(), seed_hits, target_block_ids, &hits_out, &target_ids_out, &mtx, &params);

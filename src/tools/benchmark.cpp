@@ -28,7 +28,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "dp/score_vector_int8.h"
 #include "dp/score_profile.h"
 #include "dp/ungapped.h"
-#include "util/simd/vector.h"
 #include "util/simd/transpose.h"
 #include "dp/scan_diags.h"
 #include "stats/cbs.h"
@@ -155,7 +154,7 @@ void benchmark_ungapped(const Sequence& s1, const Sequence& s2)
 #if (defined(__SSSE3__) && defined(__SSE4_1__)) | defined(__aarch64__)
 void benchmark_ssse3_shuffle(const Sequence&s1, const Sequence&s2)
 {
-	static const size_t n = 100000000llu;
+	/*static const size_t n = 100000000llu;
 	constexpr size_t CHANNELS = ScoreTraits<ScoreVector<int8_t, SCHAR_MIN>>::CHANNELS;
 	high_resolution_clock::time_point t1 = high_resolution_clock::now();
 
@@ -173,7 +172,7 @@ void benchmark_ssse3_shuffle(const Sequence&s1, const Sequence&s2)
 #else
 	*message_stream << "SSSE3 score shuffle:\t\t"
 #endif
-		<< (double)duration_cast<std::chrono::nanoseconds>(high_resolution_clock::now() - t1).count() / (n * CHANNELS) * 1000 << " ps/Letter" << endl;
+		<< (double)duration_cast<std::chrono::nanoseconds>(high_resolution_clock::now() - t1).count() / (n * CHANNELS) * 1000 << " ps/Letter" << endl;*/
 }
 #endif
 
@@ -242,7 +241,7 @@ void benchmark_transpose() {
         *message_stream << "Transpose (16x16, vectorized):\t" << (double)duration_cast<std::chrono::nanoseconds>(high_resolution_clock::now() - t2).count() / (n * 16 * 16) * 1000 << " ps/Letter" << endl;
 
 
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 	{
 		static signed char in[32 * 32], out[32 * 32];
 		signed char* v[32];
@@ -396,7 +395,7 @@ void banded_swipe(const Sequence &s1, const Sequence &s2) {
 	*message_stream << "Banded SWIPE (int16_t, CBS, TB):" << (double)duration_cast<std::chrono::nanoseconds>(high_resolution_clock::now() - t1).count() / (n * s1.length() * 65 * 16) * 1000 << " ps/Cell" << endl;
 }
 
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 
 void anchored_swipe(const Sequence& s1, const Sequence& s2) {
 	static const size_t n = 10000llu;
@@ -418,11 +417,11 @@ void anchored_swipe(const Sequence& s1, const Sequence& s2) {
 		//targets.push_back(DP::AnchoredSwipe::Target<int8_t>(s2_, -32, 32, pointers[0].data(), s1_.length(), 0, false));
 		targets.push_back(DP::AnchoredSwipe::Target<int8_t>(s2_, -32, 32, 0, s1_.length(), 0, false));
 	}
-	const int cols = round_up(s2_.length(), DP::AnchoredSwipe::ARCH_AVX2::L);
+	const int cols = round_up(s2_.length(), DP::AnchoredSwipe::DISPATCH_ARCH::L);
 
 	high_resolution_clock::time_point t1 = high_resolution_clock::now();
 	/*for (size_t i = 0; i < n; ++i) {
-		DP::AnchoredSwipe::ARCH_AVX2::smith_waterman<ScoreVector<int8_t, 0>>(targets.data(), 32, options);
+		DP::AnchoredSwipe::DISPATCH_ARCH::smith_waterman<ScoreVector<int8_t, 0>>(targets.data(), 32, options);
 		volatile auto x = targets[0].score;
 	}
 	message_stream << "Anchored Swipe (int8_t):\t" << (double)duration_cast<std::chrono::nanoseconds>(high_resolution_clock::now() - t1).count() / (n * cols * 64 * 32) * 1000 << " ps/Cell" << endl;*/
@@ -434,7 +433,7 @@ void anchored_swipe(const Sequence& s1, const Sequence& s2) {
 	}
 	t1 = high_resolution_clock::now();
 	for (size_t i = 0; i < n; ++i) {
-		DP::AnchoredSwipe::ARCH_AVX2::smith_waterman<ScoreVector<int16_t, 0>>(targets16.data(), 16, options);
+		DP::AnchoredSwipe::DISPATCH_ARCH::smith_waterman<ScoreVector<int16_t, 0>>(targets16.data(), 16, options);
 		volatile auto x = targets[0].score;
 	}
 	*message_stream << "Anchored Swipe (int16_t):\t" << (double)duration_cast<std::chrono::nanoseconds>(high_resolution_clock::now() - t1).count() / (n * cols * 64 * 16) * 1000 << " ps/Cell" << endl;
@@ -591,7 +590,7 @@ void benchmark() {
 #if defined(__SSE4_1__) | defined(__ARM_NEON)
 	//mt_swipe(s3, s4);
 #endif
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 //#ifdef __SSE4_1__
 	anchored_swipe(s1, s2);
 	//minimal_sw(s1, s2);

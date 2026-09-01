@@ -19,88 +19,44 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <inttypes.h>
 #include <cstdio>
-#include <fstream>
 #include <memory>
 #include "multinode.h"
-#include "basic/shape_config.h"
 #include "data/block/block.h"
-#include "data/fasta/fasta_file.h"
-#include "masking/masking.h"
 #include "search/lin_index/lin_index.h"
 #include "search/search.h"
-#include "util/io/file.h"
 #include "util/log_stream.h"
 #include "util/parallel/multiprocessing.h"
-#include "util/sequence/sequence.h"
-#include "util/text_buffer.h"
+#include "data/fasta/volumed_fasta_file.h"
 
 using std::runtime_error;
 using std::string;
 using std::unique_ptr;
 using std::vector;
 
-static int shape_count(Sensitivity sens) {
-	const vector<string>& codes = config.shape_mask.empty() ? Search::shape_codes.at(sens) : config.shape_mask;
-	const int n = (int)codes.size();
-	return config.shapes == 0 ? n : std::min((int)config.shapes, n);
-}
-
 bool use_lin_index(const Job& job) {
-	if (!config.seed_index || !job.is_linear_round() || config.mutual_cover.present())
-		return false;
-	return shape_count(config.sensitivity) == 1;
+	return job.is_linear_round() && !config.mutual_cover.present();
 }
 
 string lin_index_file(const string& volume_path) {
 	return volume_path + ".seedidx";
 }
 
-static bool length_sorted(const SequenceSet& seqs) {
-	const BlockId n = seqs.size();
-	for (BlockId i = 1; i < n; ++i)
-		if (seqs.length(i) > seqs.length(i - 1))
-			return false;
-	return true;
-}
-
-// Replaces the volume file by the given block in FASTA format.
-static void write_block(const Block& block, const string& path, int64_t worker_id) {
-	const string tmp_path = path + "." + std::to_string(worker_id) + ".sorted";
-	{
-		std::ofstream out(tmp_path, std::ios::binary);
-		if (!out)
-			throw runtime_error("Error opening file " + tmp_path);
-		TextBuffer buf;
-		const BlockId n = block.seqs().size();
-		for (BlockId i = 0; i < n; ++i) {
-			Util::Seq::format(block.seqs()[i], block.ids()[i], nullptr, buf, "fasta", amino_acid_traits);
-			if (buf.size() >= (int64_t)MEGABYTES) {
-				out.write(buf.data(), buf.size());
-				buf.clear();
-			}
-		}
-		out.write(buf.data(), buf.size());
-		out.close();
-		if (!out)
-			throw runtime_error("Error writing file " + tmp_path);
-	}
-	std::remove(path.c_str());
-	if (std::rename(tmp_path.c_str(), path.c_str()) != 0)
-		throw runtime_error("Error renaming file " + tmp_path);
-}
-
 void build_lin_indices(Job& job, const VolumedFile& volumes) {
+	log_rss();
 	const string base_dir = job.base_dir() + PATH_SEPARATOR + "seed_index" + PATH_SEPARATOR;
 	job.make_temp_dir(base_dir);
 	Atomic q(base_dir + "queue", job), finished(base_dir + "finished", job);
 	const int64_t n = (int64_t)volumes.size();
-	int64_t v;
+	int64_t v, volumed_processed = 0;
 
 	unique_ptr<vector<BitVector>> no_seed_hits;
 	Search::Config cfg(no_seed_hits);
 	Search::setup_search(config.sensitivity, cfg);
-	if (shapes.count() != 1)
-		throw runtime_error("Seed index is only supported for a single seed shape.");
+
+	/* Estimated number of pivots per block, written by the superblock partitioning. The
+	   hash tables of the index are sized from it, which is what saves the pass over the
+	   seeds of the block that would otherwise be needed to size them. */
+	const auto seed_counts = read_seed_counts(seed_count_file(volumes.list_file()));
 
 	while (job.goon() && (v = q.fetch_add(), v < n)) {
 		const string index_file = lin_index_file(volumes[v].path);
@@ -109,39 +65,32 @@ void build_lin_indices(Job& job, const VolumedFile& volumes) {
 			continue;
 		}
 		job.log("Building seed index. Block=%lli/%lli", v + 1, n);
+		// The positions stored in the index refer to the order of the block on disk,
+		// which is left as it is: the index keeps the length of the sequence a seed
+		// comes from, so the pivot of a seed can be selected without sorting the block
+		// by decreasing length first.
 		TaskTimer timer("Loading block");
-		unique_ptr<SequenceFile> file(new FastaFile({ volumes[v].path }, SequenceFile::Flags::SEQS | SequenceFile::Flags::TITLES | SequenceFile::Flags::NEED_LETTER_COUNT, amino_acid_traits));
+		unique_ptr<SequenceFile> file(new VolumedFastaFile({ volumes[v].path }, SequenceFile::Flags::SEQS, amino_acid_traits));
 		unique_ptr<Block> block(file->load_seqs(INT64_MAX));
 		file->close();
 		timer.finish();
-		if (!length_sorted(block->seqs())) {
-			// The positions stored in the index refer to the order of the block on
-			// disk, and the pivot of a seed is the entry with the smallest position.
-			// Both only work out if the block is sorted by decreasing length, which
-			// the search would otherwise have to redo for every block combination.
-			timer.go("Length sorting block");
-			block.reset(block->length_sorted(config.threads_));
-			timer.finish();
-			timer.go("Writing length sorted block");
-			write_block(*block, volumes[v].path, job.worker_id());
-			timer.finish();
-		}
-		if (cfg.query_masking != MaskingAlgo::NONE) {
-			timer.go("Masking block");
-			mask_seqs(block->seqs(), Masking::get(), true, cfg.query_masking);
-			timer.finish();
-		}
 		// The index is written under a temporary name and renamed, so that a
 		// worker crashing mid-write does not leave a truncated index behind.
 		const string tmp_file = index_file + "." + std::to_string(job.worker_id()) + ".tmp";
-		Search::build_lin_index(*block, tmp_file, cfg, config.threads_);
+		const auto counts = seed_counts.find(volumes[v].path);
+		if (counts == seed_counts.end())
+			throw runtime_error("No seed counter found for block " + volumes[v].path);
+		Search::build_lin_index(*block, tmp_file, cfg, config.threads_, counts->second);
 		block.reset();
+		log_rss();
 		if (!file_exists(index_file) && std::rename(tmp_file.c_str(), index_file.c_str()) != 0)
 			throw runtime_error("Error renaming seed index file " + tmp_file);
 		std::remove(tmp_file.c_str());
 		finished.fetch_add();
-		job.finish_step();
+		++volumed_processed;
 	}
+	if (volumed_processed > 0)
+		job.finish_step();
 	if (!job.goon())
 		return;
 	finished.await(n);
@@ -151,4 +100,5 @@ void build_lin_indices(Job& job, const VolumedFile& volumes) {
 void remove_lin_indices(const VolumedFile& volumes) {
 	for (const Volume& v : volumes)
 		remove_tmp_file(lin_index_file(v.path));
+	remove_tmp_file(volumes.dir() + PATH_SEPARATOR + "seed_counts.tsv");
 }

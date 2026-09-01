@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 #include "../memory/alignment.h"
+#include "../memory/memory_resource.h"
 
 template<typename T>
 struct MemBuffer {
@@ -27,27 +28,32 @@ struct MemBuffer {
 
 	typedef T value_type;
 
-	MemBuffer():
+	MemBuffer(std::pmr::memory_resource* resource = nullptr):
+		resource_(resource),
 		data_(nullptr),
 		size_(0),
 		alloc_size_(0)
 	{}
 
-	MemBuffer(size_t n):
-		data_((T*)Util::Memory::aligned_malloc(n * sizeof(T), ALIGN)),
+	MemBuffer(size_t n, std::pmr::memory_resource* resource = nullptr):
+		resource_(resource),
+		data_((T*)alloc(n)),
 		size_(n),
 		alloc_size_(n)
 	{
 	}
 
+	MemBuffer(const MemBuffer&) = delete;
+	MemBuffer& operator=(const MemBuffer&) = delete;
+
 	~MemBuffer() {
-		Util::Memory::aligned_free(data_);
+		free_data();
 	}
 
 	void resize(size_t n) {
 		if (alloc_size_ < n) {
-			Util::Memory::aligned_free(data_);
-			data_ = (T*)Util::Memory::aligned_malloc(n * sizeof(T), ALIGN);
+			free_data();
+			data_ = (T*)alloc(n);
 			alloc_size_ = n;
 		}
 		size_ = n;
@@ -83,6 +89,28 @@ struct MemBuffer {
 
 private:
 
+	void* alloc(size_t n) {
+#ifdef HAVE_MEMORY_RESOURCE
+		if (resource_)
+			return resource_->allocate(n * sizeof(T), ALIGN);
+#endif
+		return Util::Memory::aligned_malloc(n * sizeof(T), ALIGN);
+	}
+
+	void free_data() {
+		if (data_ == nullptr)
+			return;
+#ifdef HAVE_MEMORY_RESOURCE
+		if (resource_)
+			resource_->deallocate(data_, alloc_size_ * sizeof(T), ALIGN);
+		else
+#endif
+			Util::Memory::aligned_free(data_);
+		data_ = nullptr;
+		size_ = alloc_size_ = 0;
+	}
+
+	std::pmr::memory_resource* resource_;
 	T *data_;
 	size_t size_, alloc_size_;
 

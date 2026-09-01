@@ -67,7 +67,7 @@ struct SeedHit {
 };
 
 struct WorkTarget {
-	WorkTarget(BlockId block_id, const Sequence& seq, const Query& query, Loc max_target_len, Statistics& stats, std::pmr::monotonic_buffer_resource& pool);
+	WorkTarget(BlockId block_id, const Sequence& seq, const Query& query, Loc max_target_len, Statistics& stats, std::pmr::memory_resource& pool);
 	BlockId block_id;
 	Sequence seq;
 	std::array<int, MAX_CONTEXT> ungapped_score;
@@ -77,7 +77,9 @@ struct WorkTarget {
 	bool done;
 };
 
-std::vector<WorkTarget> ungapped_stage(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end, std::vector<uint32_t>::const_iterator target_block_ids, DP::Flags flags, Statistics& stat, const Block& target_block, const Mode mode, std::pmr::monotonic_buffer_resource& pool, const Search::Config& cfg);
+std::vector<WorkTarget> ungapped_stage(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end,
+	std::vector<uint32_t>::const_iterator target_block_ids, DP::Flags flags, Statistics& stat, const Block& target_block, const Mode mode,
+	std::pmr::memory_resource& pool, const Search::Config& cfg);
 
 struct Target {
 
@@ -143,6 +145,8 @@ struct Target {
 	bool done;
 };
 
+using TargetList = std::pmr::vector<Target>;
+
 struct TargetScore {
 	uint32_t target;
 	uint16_t score;
@@ -164,14 +168,18 @@ struct SeedHitList {
 	std::vector<TargetScore> target_scores;
 };
 
-void culling(std::vector<Target>& targets, bool sort_only, const Search::Config& cfg);
+void culling(TargetList& targets, bool sort_only, const Search::Config& cfg);
 void culling(std::vector<Match>& targets, const Search::Config& cfg);
-bool append_hits(std::vector<Target>& targets, std::vector<Target>::iterator begin, std::vector<Target>::iterator end, const bool with_culling, const Search::Config& cfg);
-std::pair<FlatArray<SeedHit>, std::vector<uint32_t>> gapped_filter(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end, std::vector<uint32_t>::const_iterator target_block_ids, Statistics& stat, DP::Flags flags, const Search::Config &params);
-std::vector<Target> align(std::vector<WorkTarget> &targets, const Query& query, DP::Flags flags, const HspValues hsp_values, const Mode mode, ThreadPool& tp, const Search::Config& cfg, Statistics &stat, std::pmr::monotonic_buffer_resource& pool);
-std::vector<Match> align(std::vector<Target> &targets, const int64_t previous_matches, const Query& query, DP::Flags flags, const HspValues first_round, const bool first_round_culling, Statistics &stat, const Search::Config& cfg);
-std::vector<Target> full_db_align(const Query& query, DP::Flags flags, const HspValues hsp_values, Statistics &stat, const Block& target_block);
-void recompute_alt_hsps(std::vector<Match>::iterator begin, std::vector<Match>::iterator end, const Query& query, const HspValues v, Statistics& stats);
+bool append_hits(TargetList& targets, TargetList::iterator begin, TargetList::iterator end, const bool with_culling, const Search::Config& cfg);
+std::pair<FlatArray<SeedHit>, std::vector<uint32_t>> gapped_filter(const Query& query, FlatArray<SeedHit>::Iterator seed_hits, FlatArray<SeedHit>::Iterator seed_hits_end,
+	std::vector<uint32_t>::const_iterator target_block_ids, Statistics& stat, DP::Flags flags, const Search::Config &params);
+TargetList align(std::vector<WorkTarget> &targets, const Query& query, DP::Flags flags, const HspValues hsp_values, const Mode mode, ThreadPool& tp, const Search::Config& cfg,
+	Statistics &stat, std::pmr::memory_resource& pool);
+std::vector<Match> align(TargetList &targets, const int64_t previous_matches, const Query& query, DP::Flags flags, const HspValues first_round, const bool first_round_culling,
+	Statistics &stat, const Search::Config& cfg, std::pmr::memory_resource& pool);
+TargetList full_db_align(const Query& query, DP::Flags flags, const HspValues hsp_values, Statistics &stat, const Block& target_block, std::pmr::memory_resource& pool);
+void recompute_alt_hsps(std::vector<Match>::iterator begin, std::vector<Match>::iterator end, const Query& query, const HspValues v, Statistics& stats,
+	std::pmr::memory_resource& pool);
 void apply_filters(std::vector<Match>::iterator begin, std::vector<Match>::iterator end, const Query& query, const Search::Config& cfg);
 
 std::vector<Match> extend(
@@ -180,6 +188,6 @@ std::vector<Match> extend(
 	Statistics &stat,
 	DP::Flags flags,
 	SeedHitList &l,
-	std::pmr::monotonic_buffer_resource& pool);
+	std::pmr::memory_resource& pool);
 
 }

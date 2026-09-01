@@ -22,8 +22,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <mutex>
 #include <condition_variable>
 
-// #define ENABLE_LOGGING
-
 template<typename T, typename Callback>
 struct TaskQueue
 {

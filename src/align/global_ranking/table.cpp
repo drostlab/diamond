@@ -150,11 +150,7 @@ void update_table(Search::Config& cfg) {
 	if (hits.size() == 0)
 		return;
 	TaskTimer timer("Sorting seed hits");
-#if _MSC_FULL_VER == 191627042
-	merge_sort(hits.begin(), hits.end(), config.threads_, Search::Hit::CmpQueryTarget());
-#else
 	ips4o::parallel::sort(hits.begin(), hits.end(), Search::Hit::CmpQueryTarget(), config.threads_);
-#endif
 	timer.go("Creating partition");
 	auto p = Util::Algo::partition_table(hits.begin(), hits.end(), config.threads_ * 8, ::Search::Hit::SourceQuery{ align_mode.query_contexts });
 	timer.go("Processing seed hits");

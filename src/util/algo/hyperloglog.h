@@ -33,9 +33,16 @@ struct HyperLogLog {
         compute_alpha();
     }
 
-    void add(int64_t x) {
-        uint64_t hash = MurmurHash()(x);
+    void add(uint64_t x) {
+        process_hash(MurmurHash()(x));
+    }
+    
+    void add_hash(uint64_t hash) {
         process_hash(hash);
+    }
+
+    int precision() const {
+        return p;
     }
 
     int64_t estimate() const {
@@ -61,6 +68,31 @@ struct HyperLogLog {
         return (int64_t)std::round(e);
     }
 
+    // Binary format: magic, version, precision, then one byte per register.
+    template<typename F>
+    void serialize(F& file) const {
+        file.write(FORMAT_MAGIC);
+        file.write(FORMAT_VERSION);
+        file.write((int32_t)p);
+        file.write(registers.data(), registers.size());
+    }
+
+    template<typename F>
+    static HyperLogLog deserialize(F& file) {
+        uint32_t magic, version;
+        int32_t precision;
+        file.read(magic);
+        file.read(version);
+        if (magic != FORMAT_MAGIC)
+            throw std::runtime_error("Invalid HyperLogLog file.");
+        if (version != FORMAT_VERSION)
+            throw std::runtime_error("Unsupported HyperLogLog file version.");
+        file.read(precision);
+        HyperLogLog h((int)precision);
+        file.read(h.registers.data(), h.registers.size());
+        return h;
+    }
+
     void merge(const HyperLogLog& other) {
         if (p != other.p) throw std::invalid_argument("Precision must match for merging");
         for (int i = 0; i < m; ++i) {
@@ -71,6 +103,9 @@ struct HyperLogLog {
     }
 
 private:
+
+    static constexpr uint32_t FORMAT_MAGIC = 0x4c4c4844; // "DHLL"
+    static constexpr uint32_t FORMAT_VERSION = 1;
 
     int p;
     int m;

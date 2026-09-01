@@ -25,7 +25,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 namespace DISPATCH_ARCH {
 
-#if ARCH_ID == 2 || ARCH_ID == 3
+#if ARCH_AVX2_KERNELS
 
 template<int DELTA>
 struct ScoreVector<int16_t, DELTA>
@@ -527,7 +527,6 @@ static inline int16_t extract(ScoreVector<int16_t, DELTA> sv) {
 	return 0;
 }
 
-
 #endif
 
 #if defined(__SSE2__) | defined(__ARM_NEON)
@@ -536,7 +535,7 @@ template<int DELTA>
 struct ScoreTraits<ScoreVector<int16_t, DELTA>>
 {
 	typedef ::DISPATCH_ARCH::SIMD::Vector<int16_t> Vector;
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 	enum { CHANNELS = 16 };
 	typedef uint16_t Mask;
 	struct TraceMask {

@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <inttypes.h>
 #include <algorithm>
 #include "basic/statistics.h"
+#include "masking/def.h"
 #include "multinode.h"
 #include "cluster.h"
 #include "run/workflow.h"
@@ -33,25 +34,47 @@ using std::tie;
 using std::runtime_error;
 using std::shared_ptr;
 
+static const int LINCLUST_QUERY_BINS = 128;
+
+/* Masking algorithm applied to the input when the length sorted minichunks are written.
+   Resolved once from the user setting, as configure_round() clears config.masking_ for
+   the alignment workflow. Clustering aligns the input against itself, so the asymmetric
+   BLAST_SEG mode (target only) is equivalent to masking everything. */
+MaskingAlgo input_masking_algo() {
+	static const MaskingAlgo algo = []() {
+		const MaskingMode mode = config.masking_.present() ? from_string<MaskingMode>(config.masking_.get_present()) : MaskingMode::BLAST_SEG_ALL;
+		switch (mode) {
+		case MaskingMode::NONE:
+			return MaskingAlgo::NONE;
+		case MaskingMode::TANTAN:
+			return MaskingAlgo::TANTAN;
+		default:
+			return MaskingAlgo::SEG;
+		}
+	}();
+	return algo;
+}
+
 static void run_all_vs_all(Job& job) {
 	job.log("Running all-vs-all search for round %d/%d", job.round() + 1, job.round_count());
 	const string base_dir = config.tmpdir + PATH_SEPARATOR + "round" + std::to_string(job.round()) + PATH_SEPARATOR;
 	config.output_file = base_dir + "alignments.tsv";	
 	config.self = true;
 	config.query_file.clear();
+	config.query_bins.unset();
 	config.lin_stage1_query = false;
 	config.gapped_filter_evalue_ = -1.0;
 	//config.comp_based_stats = 1;
-	config.database = job.round() == 0 ? job.root_dir() + "input0.faa" :
-		job.base_dir(job.round() - 1) + PATH_SEPARATOR + "reps" + PATH_SEPARATOR + "reps_all.faa";
-	config.fasta_index_file = job.round() == 0 ? job.root_dir() + "input.faa.faidx" : job.base_dir(job.round() - 1) + PATH_SEPARATOR + "reps" + PATH_SEPARATOR + "reps_all.faa.faidx";
+	config.database = job.round() == 0 ? job.root_dir() + "input_minichunks" + PATH_SEPARATOR + "0.faa" :
+		job.base_dir(job.round() - 1) + PATH_SEPARATOR + "rep_minichunks" + PATH_SEPARATOR + "reps_all.faa";
+	config.fasta_index_file = job.round() == 0 ? job.root_dir() + "input.faa.faidx" : job.base_dir(job.round() - 1) + PATH_SEPARATOR + "rep_minichunks" + PATH_SEPARATOR + "reps_all.faa.faidx";
 	if (config.db_size == 0)
 		throw runtime_error("Database size must be set for cascaded all-vs-all round.");
 	tie(config.chunk_size, config.lowmem_) = block_size(Util::String::interpret_number(config.memory_limit.get(DEFAULT_MEMORY_LIMIT)),
 		config.db_size,
 		config.sensitivity,
 		false,
-		config.threads_);
+		config.threads_, config.mutual_cover.present());
 	job.log("Block size: %.2f GB, index chunks: %u", config.chunk_size, config.lowmem_);
 	unique_ptr<vector<BitVector>> seed_filter;
 	Search::run(seed_filter);
@@ -70,6 +93,7 @@ static void run_block_combo(Job& job, const VolumedFile& volumes, int64_t r, int
 	}
 	config.gapped_filter_evalue_ = 0.0;
 	config.chunk_size = 65536;
+	config.query_bins.set_if_blank(LINCLUST_QUERY_BINS);
 	config.database.clear();
 	config.fasta_index_file.clear();
 	if (config.db_size == 0)
@@ -92,7 +116,7 @@ static void run_block_combo(Job& job, const VolumedFile& volumes, int64_t r, int
 	job.stats().extensions_computed += statistics.get(Statistics::EXT16) + statistics.get(Statistics::EXT32) + statistics.get(Statistics::EXT8);
 }
 
-void configure_round(Job& job, const VolumedFile& volumes) {
+void configure_round(Job& job, uint64_t letter_count) {
 	config.command = Config::blastp;
 	config.lin_index_file.clear();
 	const bool mutual_cover = config.mutual_cover.present();
@@ -109,21 +133,24 @@ void configure_round(Job& job, const VolumedFile& volumes) {
 	}
 	config.output_format = mutual_cover ? vector<string> { "tab", "qseqid", "sseqid", "corrected_bitscore" } : vector<string>{ "tab", "qseqid", "sseqid", "qcovhsp", "scovhsp", "corrected_bitscore" };
 	statistics.reset();
-	config.db_size = volumes.letter_count();
+	if (letter_count > 0)
+		config.db_size = letter_count;
 	job.log("Database letter count: %" PRIu64 " maximum OId: %" PRIu64, config.db_size, job.max_oid());
 	config.max_target_seqs_ = 0;
 	config.toppercent.unset();
 	config.iterate = vector<string>();
 	if (config.comp_based_stats_.blank())
 		config.comp_based_stats_ = 6;
-	if (config.masking_.blank())
-		config.masking_ = "seg-all";
+	// The input is hard masked when the length sorted minichunks are written
+	// (see input_masking_algo), so the alignment workflow does not mask again.
+	config.masking_ = "none";
 	config.iterate.unset();
 	config.algo = Config::Algo::DOUBLE_INDEXED;
-	//config.hamming_dist_boundary_check = true;
 	config.mapany = false;
 	config.lin_stage1_target = false;
 	config.symmetrize_evalue = true;
+	config.no_reorder = true;
+	config.no_mem_pool = true;
 	config.oid_title_max = job.max_oid();
 	//config.ungapped_filter_query_len = 1;
 	config.output_header.clear();
@@ -131,7 +158,7 @@ void configure_round(Job& job, const VolumedFile& volumes) {
 }
 
 void run_search(Job& job, const VolumedFile& volumes, int64_t r, int64_t i, string base_dir, unique_ptr<vector<BitVector>>& seed_hit_table) {
-	configure_round(job, volumes);
+	configure_round(job, volumes.letter_count());
 	if(job.is_linear_round())
 		run_block_combo(job, volumes, r, i, base_dir, seed_hit_table);
 	else

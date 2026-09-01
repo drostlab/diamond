@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "output/output_format.h"
 #include "util/util.h"
 #include "def.h"
+#include "util/memory/mem_profile.h"
 
 using std::array;
 using std::list;
@@ -77,7 +78,8 @@ static void add_dp_targets(const Target& target, int target_idx, const Sequence*
 	}
 }
 
-vector<Match> align(vector<Target>& targets, const int64_t previous_matches, const Query& query, DP::Flags flags, const HspValues first_round, const bool first_round_culling, Statistics& stat, const Search::Config& cfg) {
+vector<Match> align(TargetList& targets, const int64_t previous_matches, const Query& query, DP::Flags flags, const HspValues first_round, const bool first_round_culling, Statistics& stat, const Search::Config& cfg, std::pmr::memory_resource& pool) {
+	MEM_SCOPE("extend/traceback");
 	static const int64_t MIN_STEP = 16;
 	vector<Match> r;
 	if (targets.empty())
@@ -100,7 +102,7 @@ vector<Match> align(vector<Target>& targets, const int64_t previous_matches, con
 		flags |= DP::Flags::SEMI_GLOBAL;
 	hsp_values |= filter_hspvalues();
 
-	vector<Target>::iterator it = targets.begin();
+	TargetList::iterator it = targets.begin();
 	auto goon = [&r, &cfg, previous_matches]() { return config.toppercent.blank() ? ((int64_t)r.size() + previous_matches) < cfg.max_target_seqs : true; };
 
 	do {
@@ -135,7 +137,8 @@ vector<Match> align(vector<Target>& targets, const int64_t previous_matches, con
 				-1,
 				hsp_values,
 				stat,
-				cfg.thread_pool.get()
+				cfg.thread_pool.get(),
+				&pool
 			};
 			list<Hsp> hsp = DP::BandedSwipe::swipe(dp_targets[frame], params);
 			while (!hsp.empty())
@@ -153,7 +156,7 @@ vector<Match> align(vector<Target>& targets, const int64_t previous_matches, con
 
 	} while (it < targets.end() && goon());
 
-	recompute_alt_hsps(r.begin(), r.end(), query, hsp_values, stat);
+	recompute_alt_hsps(r.begin(), r.end(), query, hsp_values, stat, pool);
 	return r;
 }
 

@@ -32,10 +32,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/parallel/multiprocessing.h"
 #include "basic/config.h"
 #include "fasta/fasta_file.h"
+#include "fasta/volumed_fasta_file.h"
 #include "util/string/tokenizer.h"
 #include "util/log_stream.h"
 #include "util/data_structures/queue.h"
-#include "util/heartbeat.h"
 
 using std::string;
 using std::endl;
@@ -66,7 +66,8 @@ const EMap<SequenceFile::Type> EnumTraits<SequenceFile::Type>::to_string = {
 	{SequenceFile::Type::DMND, "Diamond database" },
 	{SequenceFile::Type::BLAST, "BLAST database"},
 	{SequenceFile::Type::FASTA, "FASTA file"},
-	{SequenceFile::Type::BLOCK, ""}
+	{SequenceFile::Type::BLOCK, ""},
+	{SequenceFile::Type::VOLUMED, "FASTA volume list"}
 };
 
 static string dict_file_name(const size_t query_block, const size_t target_block) {
@@ -95,6 +96,10 @@ int SequenceFile::raw_chunk_no() const {
 	throw OperationNotSupported();
 }
 
+void SequenceFile::advance_seq_count(OId n) {
+	throw OperationNotSupported();
+}
+
 pair<Block*, int64_t> SequenceFile::load_parallel(const uint64_t max_letters, const BitVector* filter, unordered_map<string, bool>* accs, const Chunk& chunk, bool load_taxids) {
 	const bool verbose_logging = false;
 	const Loc SEQ_LEN_EST = 200;
@@ -117,7 +122,7 @@ pair<Block*, int64_t> SequenceFile::load_parallel(const uint64_t max_letters, co
 	}
 	Queue<RawChunk*> queue(p * 4, 1, p, nullptr);
 	Queue<DecodedPackage*> output_queue(p * 4, p, 1, nullptr);
-	const bool byte_limited = type() == Type::FASTA, have_oids = type() == Type::BLAST;
+	const bool byte_limited = type() == Type::FASTA || type() == Type::VOLUMED, have_oids = type() == Type::BLAST;
 	uint64_t backlog_size = 0;
 	SimpleThreadPool pool;
 	auto worker = [&](const atomic<bool>& stop) {
@@ -182,17 +187,15 @@ pair<Block*, int64_t> SequenceFile::load_parallel(const uint64_t max_letters, co
 	} while (!pool.stop() && block_letters < max_letters);
 	queue.close();
 	pool.join_all();
-	//*log_stream << "building oid table seqs=" << seqs << endl;
 	log_rss();
-	if (type() == Type::FASTA && seqs > 0) {
+	if (byte_limited && seqs > 0) {
 		const OId oid_begin = tell_seq();
 		block->block2oid_.reserve((size_t)seqs);
 		for (int64_t i = 0; i < seqs; ++i)
 			block->block2oid_.push_back(oid_begin + (OId)i);
-		static_cast<FastaFile*>(this)->advance_seq_count((OId)seqs);
+		advance_seq_count((OId)seqs);
 	}
 	if (seqs > 0) {
-		//*log_stream << "finishing" << endl;
 		if (load_seqs) {
 			block->source_seqs().finish_reserve(verbose_logging);
 			block->seqs().finish_reserve(verbose_logging);
@@ -338,7 +341,7 @@ pair<Block*, uint64_t> SequenceFile::load_onepass(const uint64_t max_letters, OI
 	} while (goon() || seq_count % modulo != 0);
 	if (seq_count > 0 && looks_like_dna == seq_count)
 		throw runtime_error(DNA_ERR);
-	// TODO: Implement this check
+	// TODO
 	//if (file_count() == 2 && !files_synced())
 		//throw runtime_error("Unequal number of sequences in paired read files.");
 	block->seqs_.finish_reserve();
@@ -367,6 +370,9 @@ Block* SequenceFile::load_seqs(const int64_t max_letters, OId max_seqs, const Bi
 		tie(block, seqs_processed) = load_parallel(max_letters, filter, nullptr, chunk, false);
 	}
 	else if (type_ == Type::FASTA && filter == nullptr && file_count() == 1 && static_cast<FastaFile*>(this)->is_fasta() && max_seqs == 0 && chunk.n_seqs == 0 && !flag_any(flags_, Flags::QUALITY | Flags::DNA_PRESERVATION) && config.command != Config::regression_test) {
+		tie(block, seqs_processed) = load_parallel(max_letters, filter, nullptr, chunk, false);
+	}
+	else if (type_ == Type::VOLUMED && filter == nullptr && max_seqs == 0 && chunk.n_seqs == 0 && !flag_any(flags_, Flags::QUALITY | Flags::DNA_PRESERVATION)) {
 		tie(block, seqs_processed) = load_parallel(max_letters, filter, nullptr, chunk, false);
 	}
 	else if (flag_any(format_flags_, FormatFlags::LENGTH_LOOKUP))
@@ -456,18 +462,6 @@ void SequenceFile::get_seq()
 	out.close();
 }
 
-/*Util::Tsv::File* SequenceFile::make_seqid_list() {
-	Util::Tsv::File* f = new Util::Tsv::File(Util::Tsv::Schema{ Util::Tsv::Type::STRING }, "", Util::Tsv::Flags::TEMP);
-	vector<Letter> seq;
-	string id;
-	init_seq_access();
-	for (uint64_t n = 0; n < sequence_count(); ++n) {
-		read_seq(seq, id);
-		f->write_record(Util::Seq::seqid(id.c_str()));
-	}
-	return f;
-}*/
-
 SequenceFile::~SequenceFile()
 {
 	if (dict_file_) {
@@ -496,6 +490,8 @@ SequenceFile* SequenceFile::auto_create(const vector<string>& path, Flags flags,
 			return new DatabaseFile(a, flags, value_traits);
 	}
 	if (!flag_any(flags, Flags::NO_FASTA)) {
+		if (path.size() == 1 && VolumedFastaFile::is_volume_list(path.front()))
+			return new VolumedFastaFile(path.front(), flags, value_traits);
 		//message_stream << "Database file is not a DIAMOND or BLAST database, treating as FASTA." << std::endl;
 		return new FastaFile(path, flags, value_traits);
 	}
@@ -826,9 +822,6 @@ void SequenceFile::init_random_access(const size_t query_block, const size_t ref
 
 std::string SequenceFile::seqid(OId oid, bool all, bool full_titles) {
 	throw std::runtime_error("seqid");
-	//if (oid >= acc_.size())
-		//throw std::runtime_error("OId to accession mapping not available.");
-	//return acc_[oid];
 }
 
 template<typename It>
@@ -866,8 +859,6 @@ pair<int64_t, int64_t> SequenceFile::read_fai_file(const string& file_name, int6
 		Util::String::Tokenizer<Util::String::CharDelimiter>(l, Util::String::CharDelimiter('\t')) >> acc >> len;
 		if (flag_any(flags_, Flags::ACC_TO_OID_MAPPING))
 			acc2oid_[acc] = seqs;
-		//if (flag_any(flags_, Flags::OID_TO_ACC_MAPPING))
-//			acc_.push_back(acc.begin(), acc.end());
 		++seqs;
 		letters += len;
 	}

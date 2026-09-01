@@ -39,7 +39,7 @@ using std::tie;
 
 namespace DP { namespace AnchoredSwipe {
 
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 	
 namespace DISPATCH_ARCH {
 
@@ -204,7 +204,7 @@ Stats FLATTEN smith_waterman(DP::AnchoredSwipe::Target<typename ::DISPATCH_ARCH:
 	alignas(32) Score scores[CHANNELS * CHANNELS];
 	Loc band_max, target_len_max;
 	tie(band_max, target_len_max) = limits(targets, target_count);
-	DP::BandedSwipe::DISPATCH_ARCH::Matrix<ScoreVector> matrix(round_up(band_max, CHANNELS), 0, ScoreVector(SCORE_MIN));
+	DP::BandedSwipe::DISPATCH_ARCH::Matrix<ScoreVector> matrix(round_up(band_max, CHANNELS), 0, nullptr, ScoreVector(SCORE_MIN));
 	assert(round_up(band_max, CHANNELS) <= numeric_limits<Score>::max());
 	TargetIterator<ScoreVector> target_it(targets, target_count, target_len_max, matrix, options);
 	const ScoreVector go = ScoreVector(score_matrix.gap_open() + score_matrix.gap_extend()),

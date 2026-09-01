@@ -102,24 +102,23 @@ struct AccMapping {
 std::pmr::unordered_map<OId, std::pmr::string> read_mapping_table(Job& job, const Volume& vol, size_t v, std::pmr::memory_resource& pool, bool remove) {
 	std::pmr::unordered_map<OId, std::pmr::string> oid2acc(&pool);
 	oid2acc.reserve(vol.record_count);
-	const string path = job.root_dir() + "input" + std::to_string(v) + ".tsv";
-	ifstream in(path);
+	ifstream in(vol.path);
 	if (!in.good())
-		throw runtime_error("Error opening accessions file: " + path);
+		throw runtime_error("Error opening accessions file: " + vol.path);
 	OId oid;
 	std::pmr::string acc(&pool);
 	while (in >> oid) {
 		in >> acc;
 		if (!in)
-			throw runtime_error("Format error in accessions file: " + path);
+			throw runtime_error("Format error in accessions file: " + vol.path);
 		if (oid2acc.emplace(oid, acc).second == false)
-			throw runtime_error("Duplicate OID in accessions file: " + path);
+			throw runtime_error("Duplicate OID in accessions file: " + vol.path);
 	}
 	in.close();
 	if (oid2acc.size() < vol.record_count)
 		throw runtime_error("Accessions file does not contain all OIDs");
 	if(remove)
-		remove_tmp_file(path);
+		remove_tmp_file(vol.path);
 	return oid2acc;
 }
 
@@ -159,6 +158,7 @@ static RadixedTable output_round1(Job& job, const vector<OId>& merged, const Vol
 		const Volume& vol = volumes.at(v);
 		job.log("Building output table (round 1) volume %zu/%zu", v + 1, volumes.size());
 		const std::pmr::unordered_map<OId, std::pmr::string> oid2acc = read_mapping_table(job, vol, v, pool, false);
+		remove_tmp_file(vol.path);
 		for (auto it = oid2acc.cbegin(); it != oid2acc.cend(); ++it) {
 			const OId oid = it->first;
 			const std::pmr::string& acc = it->second;
@@ -167,6 +167,7 @@ static RadixedTable output_round1(Job& job, const vector<OId>& merged, const Vol
 		}
 		log_rss();
 	}
+	volumes.remove(true, false, true);
 	return output_files->buckets(shift);
 }
 

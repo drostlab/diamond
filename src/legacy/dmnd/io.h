@@ -22,56 +22,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/algo/varint.h"
 #include "util/io/file.h"
 
-/*static inline void write_varint(Serializer& s, int32_t x) {
-	char buf[5];
-	char* end = write_varuint32(x, buf);
-	s.write_raw(buf, end - buf);
-}*/
-
 static inline void write_varint(File& s, int32_t x) {
 	char buf[5];
 	char* end = write_varuint32(x, buf);
 	s.write(buf, end - buf);
 }
 
-/*/template<typename It>
-static inline void serialize_varint(Serializer& s, It begin, It end) {
-	for (It i = begin; i != end; ++i)
-		write_varint(s, *i);
-}*/
-
 template<typename It>
 static inline void serialize_varint(File& s, It begin, It end) {
 	for (It i = begin; i != end; ++i)
 		write_varint(s, *i);
 }
-
-/*template<typename It>
-static inline void serialize(Serializer& s, It begin, It end) {
-	for (It i = begin; i != end; ++i)
-		s << *i;
-}
-
-static inline void serialize(Serializer& s, const std::set<int32_t>& v) {
-	write_varint(s, (int32_t)v.size());
-	serialize_varint(s, v.cbegin(), v.cend());
-}
-
-static inline void serialize(Serializer& s, const std::vector<int32_t>& v) {
-	s.write((uint32_t)v.size());
-	serialize(s, v.cbegin(), v.cend());
-}
-
-static inline void serialize(Serializer& s, const std::vector<std::string>& v) {
-	s.write((uint32_t)v.size());
-	serialize(s, v.cbegin(), v.cend());
-}*/
-
-/*template<typename It>
-static inline void serialize(File& s, It begin, It end) {
-	for (It i = begin; i != end; ++i)
-		s << *i;
-}*/
 
 static inline void serialize(File& s, const std::set<int32_t>& v) {
 	write_varint(s, (int32_t)v.size());
@@ -92,12 +53,6 @@ static inline void serialize(File& f, const std::vector<std::string>& v) {
 	for (const std::string& s : v)
 		f.write_c_str(s.c_str());
 }
-
-
-/*template<typename T1, typename T2>
-void serialize(Serializer& s, const std::pair<T1, T2>& p) {
-	s << p.first << p.second;
-}*/
 
 static inline void serialize(File& f, const std::pair<uint64_t, int32_t>& p) {
 	f.write(big_endian_byteswap(p.first));
@@ -141,30 +96,6 @@ NODISCARD static inline bool deserialize(File& f, std::pair<uint64_t, int32_t>& 
 	return true;
 }
 
-/*static inline void deserialize(Deserializer& d, std::vector<std::string>& out) {
-	uint32_t n;
-	d >> n;
-	out.clear();
-	out.reserve(n);
-	std::string s;
-	for (uint32_t i = 0; i < n; ++i) {
-		d >> s;
-		out.push_back(std::move(s));
-	}
-}
-
-static inline void deserialize(Deserializer& d, std::vector<std::int32_t>& out) {
-	uint32_t n;
-	d >> n;
-	out.clear();
-	out.reserve(n);
-	int32_t x;
-	for (uint32_t i = 0; i < n; ++i) {
-		d >> x;
-		out.push_back(x);
-	}
-}*/
-
 static inline void deserialize(File& d, std::vector<std::string>& out) {
 	uint32_t n;
 	d.read(n);
@@ -191,8 +122,3 @@ static inline void deserialize(File& d, std::vector<std::int32_t>& out) {
 		out.push_back(x);
 	}
 }
-
-/*template<typename T1, typename T2>
-void deserialize(Deserializer& s, std::pair<T1, T2>& out) {
-	s >> out.first >> out.second;
-}*/

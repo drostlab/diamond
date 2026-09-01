@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "legacy/daa/daa_write.h"
 #include "util/sequence/sequence.h"
 #include "util/util.h"
+#include "util/memory/mem_profile.h"
 
 using std::vector;
 using std::string;
@@ -31,6 +32,7 @@ namespace Extension {
 
 TextBuffer* generate_output(vector<Match> &targets, BlockId query_block_id, Statistics &stat, const Search::Config& cfg)
 {
+	MEM_SCOPE("output/text-buffer");
 	const bool aligned = !targets.empty();
 	if (!aligned && !cfg.output_format->report_unaligned())
 		return nullptr;
@@ -114,6 +116,7 @@ TextBuffer* generate_output(vector<Match> &targets, BlockId query_block_id, Stat
 
 TextBuffer* generate_intermediate_output(const vector<Match> &targets, BlockId query_block_id, const Search::Config& cfg)
 {
+	MEM_SCOPE("output/text-buffer");
 	TextBuffer* out = new TextBuffer;
 	if (targets.empty())
 		return out;

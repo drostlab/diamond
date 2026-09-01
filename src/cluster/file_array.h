@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "radixed_table.h"
 #include "util/io/compressed_buffer.h"
 #include "util/algo/degree_partition.h"
 
@@ -139,29 +140,6 @@ private:
 
 };
 
-/*template<typename T, int N>
-struct BufferArray {
-	static constexpr int64_t BUF_SIZE = 4096;
-	BufferArray(FileArray& file_array) :
-		file_array_(file_array)
-	{}
-	void write(int radix, const T& x) {
-		data_[radix].push_back(x);
-		if (data_[radix].size() >= BUF_SIZE) {
-			file_array_.write(radix, data_[radix].data(), data_[radix].size());
-			data_[radix].clear();
-		}
-	}
-	~BufferArray() {
-		for (int i = 0; i < N; ++i)
-			file_array_.write(i, data_[i].data(), data_[i].size());
-	}
-private:
-	std::array<std::vector<T>, N> data_;
-	FileArray& file_array_;
-};*/
-
-
 struct BufferArray {
 
 	static constexpr int64_t BUF_SIZE = 65536;
@@ -174,19 +152,10 @@ struct BufferArray {
 	}
 
 	template<typename T>
-	//bool write(int radix, const T* ptr, size_t n, int64_t record_count) {
 	void write(uint64_t radix, const T* ptr, size_t n, int64_t record_count) {
 		for (size_t i = 0; i < n; ++i)
 			serialize(ptr[i], data_[radix]);
 		records_[radix] += record_count;
-		/*if (data_[radix].size() >= BUF_SIZE) {
-			data_[radix].finish();
-			const bool r = file_array_.write(radix, data_[radix].data(), data_[radix].size(), records_[radix]);
-			data_[radix].clear();
-			records_[radix] = 0;
-			return r;
-		}
-		return false;*/
 		flush(radix);
 	}
 

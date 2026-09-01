@@ -27,6 +27,7 @@ option(STATIC_LIBSTDC++ "STATIC_LIBSTDC++" OFF)
 option(X86 "X86" ON)
 option(ARM "ARM" OFF)
 option(AARCH64 "AARCH64" OFF)
+option(LOONGARCH64 "LOONGARCH64" OFF)
 option(WITH_ZSTD "WITH_ZSTD" OFF)
 option(CROSS_COMPILE "CROSS_COMPILE" OFF)
 
@@ -39,9 +40,11 @@ option(DP_STAT "DP_STAT" OFF)
 option(HIT_KEEP_TARGET_ID "HIT_KEEP_TARGET_ID" OFF)
 option(LONG_SEEDS "LONG_SEEDS" OFF)
 option(WITH_AVX512 "WITH_AVX512" OFF)
+option(WITH_AVX512_WIDE "WITH_AVX512_WIDE" OFF)
 option(WITH_DNA "WITH_DNA" OFF)
 option(WITH_MCL "WITH_MCL" OFF)
 option(USE_TLS "USE_TLS" OFF)
+option(MEM_PROFILE "MEM_PROFILE" OFF)
 
 set(MAX_SHAPE_LEN 19)
 
@@ -54,6 +57,11 @@ elseif(NOT CROSS_COMPILE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm.*|ARM.*)")
 elseif(NOT CROSS_COMPILE AND CMAKE_SYSTEM_PROCESSOR MATCHES "PPC64*|ppc64*|powerpc64*")
   set(X86 OFF)
   # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maltivec")
+elseif(NOT CROSS_COMPILE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(loongarch64.*|LOONGARCH64.*|loong64.*)")
+  set(X86 OFF)
+  set(LOONGARCH64 ON)
+elseif(NOT CROSS_COMPILE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(loongarch.*|LOONGARCH.*|loong.*)")
+  set(X86 OFF)
 elseif(NOT CROSS_COMPILE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^s390|sparc")
   set(X86 OFF)
 endif()
@@ -82,6 +90,10 @@ if(DP_STAT)
   add_definitions(-DDP_STAT)
 endif()
 
+if(MEM_PROFILE)
+  add_definitions(-DMEM_PROFILE)
+endif()
+
 if(EXTRA)
   add_definitions(-DEXTRA)
 endif()
@@ -98,6 +110,16 @@ if(WITH_AVX512)
   add_definitions(-DWITH_AVX512)
 endif()
 
+# Enables the 512 bit wide kernels (seed fingerprints, tantan) inside the AVX512
+# code path. Off by default: they measured slower than their 256 bit counterparts
+# on Ice Lake SP. See the comment in src/util/simd.h.
+if(WITH_AVX512_WIDE)
+  if(NOT WITH_AVX512)
+    message(FATAL_ERROR "WITH_AVX512_WIDE requires WITH_AVX512")
+  endif()
+  add_definitions(-DWITH_AVX512_WIDE)
+endif()
+
 if(WITH_DNA)
   add_definitions(-DWITH_DNA)
 endif()
@@ -111,7 +133,13 @@ if(WITH_FAMSA)
 endif()
 
 add_definitions(-DMAX_SHAPE_LEN=${MAX_SHAPE_LEN})
-add_definitions(-D_ITERATOR_DEBUG_LEVEL=0)
+# _ITERATOR_DEBUG_LEVEL must match the CRT that is linked: 0 for /MD, 2 for /MDd.
+# Forcing 0 in an MSVC Debug build (/MDd) changes the layout of std::string and every
+# std container in our objects, but msvcp140d.dll is still built with level 2, so any
+# container crossing that boundary (e.g. a std::string returned from an overridden
+# numpunct::do_grouping) is read at the wrong offsets and crashes. Only set it where
+# it is a no-op anyway.
+add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:_ITERATOR_DEBUG_LEVEL=0>)
 
 IF(STATIC_LIBGCC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc")
@@ -211,9 +239,14 @@ else()
     include(CheckCXXCompilerFlag)
 
     set(ARCH_GENERIC_CXX_FLAGS
-        -mtune=generic
         -fno-stack-protector
     )
+
+    check_cxx_compiler_flag("-mtune=generic" HAVE_CXX_FLAG_MTUNE_GENERIC)
+
+    if(HAVE_CXX_FLAG_MTUNE_GENERIC)
+        list(APPEND ARCH_GENERIC_CXX_FLAGS -mtune=generic)
+    endif()
 
     check_cxx_compiler_flag("-fcf-protection=none"
                             HAVE_CXX_FLAG_FCF_PROTECTION_NONE)
@@ -237,13 +270,21 @@ if(X86)
     target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -DARCH_ID=1 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__ /Zc:__cplusplus)
     target_compile_options(arch_avx2 PUBLIC -DDISPATCH_ARCH=ARCH_AVX2 -DARCH_ID=2 /arch:AVX2 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__ /Zc:__cplusplus)
     if(WITH_AVX512)
-      target_compile_options(arch_avx512 PUBLIC -DDISPATCH_ARCH=ARCH_AVX512 -DARCH_ID=3 /arch:AVX512 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__)
+      target_compile_options(arch_avx512 PUBLIC -DDISPATCH_ARCH=ARCH_AVX512 -DARCH_ID=3 /arch:AVX512 -D__SSSE3__ -D__SSE4_1__ -D__POPCNT__ /Zc:__cplusplus)
     endif()
   else()
-    target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -DARCH_ID=1 -mssse3 -mpopcnt -msse4.1)
-    target_compile_options(arch_avx2 PUBLIC -DDISPATCH_ARCH=ARCH_AVX2 -DARCH_ID=2 -mssse3 -mpopcnt -msse4.1 -msse4.2 -mavx -mavx2 -mfma)
-    if(WITH_AVX512)
-      target_compile_options(arch_avx512 PUBLIC -DDISPATCH_ARCH=ARCH_AVX512 -DARCH_ID=3 -mssse3 -mpopcnt -msse4.1 -msse4.2 -mavx -mavx2 -mavx512f -mavx512bw)
+    target_compile_options(arch_sse4_1 PUBLIC -DDISPATCH_ARCH=ARCH_SSE4_1 -DARCH_ID=1 -mssse3 -mpopcnt -msse4.1 -msse4.2 -mcx16 -msahf)
+    target_compile_options(arch_avx2 PUBLIC -DDISPATCH_ARCH=ARCH_AVX2 -DARCH_ID=2 -mssse3 -mpopcnt -msse4.1 -msse4.2 -mavx -mavx2 -mfma -mcx16 -msahf -mbmi -mbmi2 -mlzcnt -mf16c -mmovbe -maes -mpclmul -mxsave -mxsaveopt)
+    if(WITH_AVX512)      
+      check_cxx_compiler_flag("-march=x86-64-v4" HAVE_MARCH_X86_64_V4)
+      if(HAVE_MARCH_X86_64_V4)
+        set(ARCH_AVX512_CXX_FLAGS -march=x86-64-v4)
+      else()
+        set(ARCH_AVX512_CXX_FLAGS -mssse3 -mpopcnt -msse4.1 -msse4.2 -mavx -mavx2 -mfma
+            -mcx16 -msahf -mbmi -mbmi2 -mlzcnt -mf16c -mmovbe -maes -mpclmul -mxsave
+            -mxsaveopt -mavx512f -mavx512bw -mavx512cd -mavx512dq -mavx512vl)
+      endif()
+      target_compile_options(arch_avx512 PUBLIC -DDISPATCH_ARCH=ARCH_AVX512 -DARCH_ID=3 ${ARCH_AVX512_CXX_FLAGS})
     endif()
   endif()
 endif(X86)
@@ -302,12 +343,12 @@ set(OBJECTS
         src/basic/basic.cpp
         src/basic/hssp.cpp
         src/dp/ungapped_align.cpp
-        src/run/tools.cpp
-        src/chaining/greedy_align.cpp
+        src/legacy/tools.cpp
+        src/legacy/chaining/greedy_align.cpp
         src/output/output_format.cpp
         src/output/join_blocks.cpp
         src/data/frequent_seeds.cpp
-        src/align/legacy/query_mapper.cpp
+        src/legacy/frameshift/query_mapper.cpp
         src/output/blast_tab_format.cpp
         src/output/blast_pairwise_format.cpp
         src/run/double_indexed.cpp
@@ -322,7 +363,7 @@ set(OBJECTS
         src/legacy/daa/view.cpp
         src/output/output_sink.cpp
         src/output/target_culling.cpp
-        src/align/legacy/banded_swipe_pipeline.cpp
+        src/legacy/frameshift/banded_swipe_pipeline.cpp
         src/util/io/compressed_buffer.cpp
         src/util/io/file.cpp
         src/data/taxon_list.cpp
@@ -330,8 +371,10 @@ set(OBJECTS
         src/lib/murmurhash/MurmurHash3.cpp
         src/output/paf_format.cpp
         src/util/system/system.cpp
+        src/util/memory/mem_profile.cpp
         src/util/sequence/sequence.cpp
         src/tools/tools.cpp
+        src/tools/count_distinct.cpp
         src/tools/composition_matrix.cpp
         src/util/system/getRSS.cpp
         src/lib/tantan/LambdaCalculator.cc
@@ -344,7 +387,7 @@ set(OBJECTS
         src/align/full_db.cpp
         src/align/culling.cpp
         src/align/output.cpp
-        src/chaining/smith_waterman.cpp
+        src/legacy/chaining/smith_waterman.cpp
         src/output/xml_format.cpp
         src/align/gapped_filter.cpp
         src/util/parallel/filestack.cpp
@@ -389,6 +432,7 @@ set(OBJECTS
         src/masking/motifs.cpp
         src/align/alt_hsp.cpp
         src/data/fasta/fasta_file.cpp
+        src/data/fasta/volumed_fasta_file.cpp
         src/cluster/output.cpp
         src/cluster/realign.cpp
         src/cluster/reassign.cpp
@@ -397,13 +441,13 @@ set(OBJECTS
         #src/cluster/cascaded/recluster.cpp
         src/cluster/helpers.cpp
         src/search/kmer_ranking.cpp
-        src/chaining/hamming_ext.cpp
+        src/legacy/chaining/hamming_ext.cpp
         src/lib/blast/blast_message.cpp
         src/lib/blast/blast_stat.cpp
         src/lib/blast/blastn_score.cpp
         src/lib/blast/ncbi_std.cpp
         src/legacy/daa/merge.cpp
-        src/chaining/backtrace.cpp
+        src/legacy/chaining/backtrace.cpp
         src/dp/scalar/smith_waterman.cpp
         #src/util/algo/mcl.cpp
         src/stats/matrix_adjust/ncbi.cpp
@@ -423,6 +467,8 @@ set(OBJECTS
         src/cluster/merge.cpp
         src/cluster/search.cpp
         src/cluster/lin_index.cpp
+        src/cluster/combine_blocks.cpp
+        src/cluster/count_seeds.cpp
         src/search/lin_index/lin_index.cpp
         src/util/io/zlib_bridge.cpp
         src/util/sequence/seqindex.cpp
@@ -538,11 +584,12 @@ add_test(NAME galaxy_7 COMMAND ${CMAKE_COMMAND} -DNAME=galaxy_7 "-DARGS=blastx -
 add_test(NAME galaxy_9 COMMAND ${CMAKE_COMMAND} -DNAME=galaxy_9 "-DARGS=blastx --threads 2 --db ${TD}/galaxy/db.dmnd --query ${TD}/galaxy/nucleotide.fasta --query-gencode 1 --strand both --min-orf 1 --outfmt 6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore --header 0 --compress 0 --matrix BLOSUM62 --comp-based-stats 1 --masking tantan --max-target-seqs 25 --evalue 0.001 --id 0.0 --approx-id 0.0 --query-cover 0.0 --subject-cover 0.0 --block-size 2.0 --motif-masking 0 --soft-masking 0  --algo 0 --global-ranking 10 --index-chunks 4 --file-buffer-size 67108864" ${SP})
 add_test(NAME blastx-nanopore COMMAND ${CMAKE_COMMAND} -DNAME=blastx-nanopore "-DARGS=blastx -q ${TD}/SRR14011045_1.fastq -d ${TD}/nr_10k.faa -p4 -c1 -k0" ${SP})
 add_test(NAME blastx-nanopore-fna COMMAND ${CMAKE_COMMAND} -DNAME=blastx-nanopore-fna "-DARGS=blastx -q ${TD}/SRR14011045_1.fna.gz -d ${TD}/nr_10k.faa -p4 -c1 -k0" ${SP})
+add_test(NAME blastx-frameshift COMMAND ${CMAKE_COMMAND} -DNAME=blastx-frameshift "-DARGS=blastx -q ${TD}/SRR14011045_1.fastq -d ${TD}/nr_10k.faa -p4 -c1 -k0 -F 15 -f 0" ${SP})
 add_test(NAME blastp-global-ranking COMMAND ${CMAKE_COMMAND} -DNAME=blastp-global-ranking "-DARGS=blastp -q ${TD}/nr_10k.faa -d ${TD}/nr_10k.faa -p4 -c1 -k0 --sensitive -s1 -g10 -b0.002" ${SP})
 add_test(NAME blastp-blocked COMMAND ${CMAKE_COMMAND} -DNAME=blastp-blocked "-DARGS=blastp -q ${TD}/nr_10k.faa -d ${TD}/nr_10k.faa -p4 -c1 -b0.002" ${SP})
 add_test(NAME linclust COMMAND ${CMAKE_COMMAND} -DNAME=linclust "-DARGS=linclust -d ${TD}/nr_10k.faa -p4 --approx-id 0" ${SP})
 add_test(NAME deepclust COMMAND ${CMAKE_COMMAND} -DNAME=deepclust "-DARGS=deepclust -d ${TD}/nr_10k.faa -p4 --fpu-compat" ${SP})
-add_test(NAME deepclust-multiblock COMMAND ${CMAKE_COMMAND} -DNAME=deepclust-multiblock "-DARGS=deepclust -d ${TD}/nr_10k.faa -p4 --fpu-compat --approx-id 50 -M 0.01G" ${SP})
+add_test(NAME deepclust-multiblock COMMAND ${CMAKE_COMMAND} -DNAME=deepclust-multiblock "-DARGS=deepclust -d ${TD}/nr_10k.faa -p4 --fpu-compat --approx-id 50 -M 0.005G --linclust-minichunk 500K" ${SP})
 add_test(NAME realign COMMAND ${CMAKE_COMMAND} -DNAME=realign "-DARGS=realign -d ${TD}/nr_10k.faa -p1 --clusters ${TD}/linclust.out" ${SP})
 add_test(NAME blastp-daa COMMAND ${CMAKE_COMMAND} -DNAME=blastp-daa "-DARGS=blastp -q ${TD}/nr_300.faa -d nr_10k.dmnd -p1 -f 100 -c1 --no-auto-append --daa-build-version 179" ${SP})
 add_test(NAME view COMMAND ${CMAKE_COMMAND} -DNAME=view "-DARGS=view -a ${TD}/test.daa -p4 -k0" ${SP})

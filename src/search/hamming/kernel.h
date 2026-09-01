@@ -37,9 +37,9 @@ static void all_vs_all(const array<char, 48>* __restrict a, uint_fast32_t na, co
 		for (uint_fast32_t j = 0; j < nb; ++j) {
 			const FingerPrint fb(b[j]);
 			out.set(i, j, e1.match(fb) >= hamming_filter_id);
-			out.set(i+1, j, e2.match(fb) >= hamming_filter_id);
-			out.set(i+2, j, e3.match(fb) >= hamming_filter_id);
-			out.set(i+3, j, e4.match(fb) >= hamming_filter_id);
+			out.set(i + 1, j, e2.match(fb) >= hamming_filter_id);
+			out.set(i + 2, j, e3.match(fb) >= hamming_filter_id);
+			out.set(i + 3, j, e4.match(fb) >= hamming_filter_id);
 		}
 	}
 	for (; i < na; ++i) {

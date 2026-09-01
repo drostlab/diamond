@@ -57,10 +57,11 @@ struct Sequence
 		len_((Loc)data.size()),
 		data_(data.data())
 	{}
-	Sequence(const Sequence &seq, int from, int to):
-		len_(to-from+1),
+	Sequence(const Sequence& seq, int from, int to) :
+		len_(to - from + 1),
 		data_(seq.data() + from)
-	{}
+	{
+	}
 	Loc length() const
 	{
 		return len_;

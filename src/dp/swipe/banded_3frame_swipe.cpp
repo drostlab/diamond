@@ -22,7 +22,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <utility>
 #include <numeric>
 #include <atomic>
-#include "util/simd/vector.h"
 #include "../dp.h"
 #include "swipe.h"
 #include "target_iterator.h"
@@ -104,11 +103,7 @@ struct Banded3FrameSwipeMatrix
 
 private:
 	const size_t band_;
-#ifdef USE_TLS
-	static thread_local MemBuffer<Sv> hgap_, score_;
-#else
 	MemBuffer<Sv> hgap_, score_;
-#endif
 
 };
 
@@ -311,55 +306,46 @@ struct Banded3FrameSwipeTracebackMatrix
 
 private:
 	const size_t band_;
-#ifdef USE_TLS
-	static thread_local MemBuffer<Sv> hgap_;
-#else
 	MemBuffer<Sv> hgap_;
-#endif
 	MemBuffer<Sv> score_;
 
 };
 
-#ifdef USE_TLS
-template<typename Sv> thread_local MemBuffer<Sv> Banded3FrameSwipeMatrix<Sv>::hgap_;
-template<typename Sv> thread_local MemBuffer<Sv> Banded3FrameSwipeMatrix<Sv>::score_;
-template<typename Sv> thread_local MemBuffer<Sv> Banded3FrameSwipeTracebackMatrix<Sv>::hgap_;
-#endif
-
-template<typename _sv, typename _traceback>
+template<typename Sv, typename Traceback>
 struct Banded3FrameSwipeMatrixRef
 {
 };
 
-template<typename _sv>
-struct Banded3FrameSwipeMatrixRef<_sv, DP::Traceback>
+template<typename Sv>
+struct Banded3FrameSwipeMatrixRef<Sv, DP::Traceback>
 {
-	typedef Banded3FrameSwipeTracebackMatrix<_sv> type;
+	typedef Banded3FrameSwipeTracebackMatrix<Sv> type;
 };
 
-template<typename _sv>
-struct Banded3FrameSwipeMatrixRef<_sv, DP::ScoreOnly>
+template<typename Sv>
+struct Banded3FrameSwipeMatrixRef<Sv, DP::ScoreOnly>
 {
-	typedef Banded3FrameSwipeMatrix<_sv> type;
+	typedef Banded3FrameSwipeMatrix<Sv> type;
 };
 
-template<typename _sv>
-Hsp traceback(Sequence *query, Strand strand, int dna_len, const Banded3FrameSwipeTracebackMatrix<_sv> &dp, const DpTarget &target, int d_begin, typename ScoreTraits<_sv>::Score max_score, double evalue, int max_col, int channel, int i0, int i1)
+template<typename Sv>
+Hsp traceback(Sequence *query, Strand strand, int dna_len, const Banded3FrameSwipeTracebackMatrix<Sv> &dp, const DpTarget &target, int d_begin,
+	typename ScoreTraits<Sv	>::Score max_score, double evalue, int max_col, int channel, int i0, int i1)
 {
-	typedef typename ScoreTraits<_sv>::Score Score;
+	typedef typename ScoreTraits<Sv>::Score Score;
 	const int j0 = i1 - (target.d_end - 1), d1 = target.d_end;
-	typename Banded3FrameSwipeTracebackMatrix<_sv>::TracebackIterator it(dp.traceback(max_col + 1, i0 + max_col, j0 + max_col, dna_len, channel, max_score));
+	typename Banded3FrameSwipeTracebackMatrix<Sv>::TracebackIterator it(dp.traceback(max_col + 1, i0 + max_col, j0 + max_col, dna_len, channel, max_score));
 	
 	Hsp out(true);
 	out.swipe_target = target.target_idx;
-	out.score = ScoreTraits<_sv>::int_score(max_score) * config.cbs_matrix_scale;
+	out.score = ScoreTraits<Sv>::int_score(max_score) * config.cbs_matrix_scale;
 	out.bit_score = score_matrix.bitscore(out.score);
 	out.evalue = evalue;
 	out.transcript.reserve(size_t(out.score * config.transcript_len_estimate));
 
 	out.set_end(it.i + 1, it.j + 1, Frame(strand, it.frame), dna_len);
 
-	while (it.score() > ScoreTraits<_sv>::zero_score()) {
+	while (it.score() > ScoreTraits<Sv>::zero_score()) {
 		const Letter q = query[it.frame][it.i], s = target.seq[it.j];
 		const Score m = score_matrix(q, s), score = it.score();
 		if (score == it.sm3() + m) {
@@ -389,13 +375,14 @@ Hsp traceback(Sequence *query, Strand strand, int dna_len, const Banded3FrameSwi
 	return out;
 }
 
-template<typename _sv>
-Hsp traceback(Sequence *query, Strand strand, int dna_len, const Banded3FrameSwipeMatrix<_sv> &dp, const DpTarget &target, int d_begin, typename ScoreTraits<_sv>::Score max_score, double evalue, int max_col, int channel, int i0, int i1)
+template<typename Sv>
+Hsp traceback(Sequence *query, Strand strand, int dna_len, const Banded3FrameSwipeMatrix<Sv> &dp, const DpTarget &target, int d_begin,
+	typename ScoreTraits<Sv>::Score max_score, double evalue, int max_col, int channel, int i0, int i1)
 {
 	Hsp out(false);
 	const int j0 = i1 - (target.d_end - 1);
 	out.swipe_target = target.target_idx;
-	out.score = ScoreTraits<_sv>::int_score(max_score) * config.cbs_matrix_scale;
+	out.score = ScoreTraits<Sv>::int_score(max_score) * config.cbs_matrix_scale;
 	out.bit_score = score_matrix.bitscore(out.score);
 	out.evalue = evalue;
 	out.query_range.end_ = std::min(i0 + max_col + (int)dp.band() / 3 / 2, (int)query[0].length());
@@ -434,7 +421,7 @@ list<Hsp> banded_3frame_swipe(
 		i0 = std::min(i0, i2 + 1 - band);
 	}
 
-	TargetIterator<Score> targets(subject_begin, subject_end, false, i1, qlen, d_begin);
+	TargetIterator<Sv> targets(subject_begin, subject_end, false, i1, qlen, d_begin);
 	Matrix dp(band * 3, targets.cols);
 
 	const Sv open_penalty(score_matrix.gap_open() + score_matrix.gap_extend()),

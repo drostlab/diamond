@@ -24,6 +24,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <limits>
 #include <memory>
 #include <unordered_map>
+#include "masking/masking.h"
 #include "multinode.h"
 #include "util/data_structures/queue.h"
 #include "util/parallel/simple_thread_pool.h"
@@ -35,6 +36,7 @@ using std::runtime_error;
 using std::ofstream;
 using std::string;
 using std::vector;
+using std::pair;
 using std::endl;
 using std::tie;
 using std::atomic;
@@ -57,6 +59,11 @@ struct OutputChunk {
 
 static void write_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstream>>& out, vector<unique_ptr<ofstream>>& acc_out, const vector<int>& block_mapping) {
 	job.log("Writing length sorted blocks");
+	/* The input is masked here, once, and the masked letters are written to the minichunks
+	   as X. All later stages of the workflow (seed counting, seed index building, alignment)
+	   read the minichunks and therefore need no masking of their own. */
+	const MaskingAlgo masking = input_masking_algo();
+	job.log("Input masking: %s", to_string(masking).c_str());
 	OId oid = 0;
 	atomic<uint64_t> bytes_written{ 0 };
 	const size_t writer_count = std::max<size_t>(1, std::min<size_t>(out.size(), std::max(1, config.threads_)));
@@ -64,7 +71,7 @@ static void write_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstr
 	SimpleThreadPool pool;
 
 	auto process_volume = [&](const Volume& volume, ptrdiff_t idx) {
-		const SequenceFile::Flags flags = SequenceFile::Flags::ALL | SequenceFile::Flags::NEED_LETTER_COUNT;
+		const SequenceFile::Flags flags = SequenceFile::Flags::ALL;
 		unique_ptr<SequenceFile> file;
 		try {
 			file.reset(SequenceFile::auto_create({ volume.path }, flags, amino_acid_traits));
@@ -82,6 +89,12 @@ static void write_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstr
 			if (b->empty()) {
 				delete b;
 				break;
+			}
+			if (masking != MaskingAlgo::NONE) {
+				timer.go("Masking input block");
+				const MaskingStat stats = mask_seqs(b->seqs(), Masking::get(), true, masking);
+				timer.finish();
+				stats.print(*message_stream);
 			}
 			const OId oid_begin = oid;
 			const size_t seq_count = b->seqs().size();			
@@ -190,34 +203,34 @@ static void write_blocks(Job& job, VolumedFile& volumes, vector<unique_ptr<ofstr
 			throw runtime_error("Error writing length sorted block");
 }
 
-string len_sort(Job& job, VolumedFile& volumes) {
+pair<string, string> len_sort(Job& job, VolumedFile& volumes) {
 	Atomic lock(job.root_dir() + "lensort_lock", job), done(job.root_dir() + "lensort_done", job);
 	const bool first_round_linear = job.is_linear_round();
-	const string input_parts = job.root_dir() + "input.tsv", input_letters = job.root_dir() + "input_letters.txt";
+	const string input_letters = job.root_dir() + "input_letters.txt", out_dir = job.root_dir() + "input_minichunks" + PATH_SEPARATOR,
+		out_seqs = out_dir + "seqs.tsv", out_accs = out_dir + "accs.tsv";
 	if (lock.fetch_add() == 0) {
-		ofstream idx(input_parts);
 		vector<unique_ptr<ofstream>> out;
 		vector<unique_ptr<ofstream>> acc_out;
-		vector<int> block_mapping = make_blocks(job, volumes, out, acc_out);
+		vector<int> block_mapping = make_blocks(job, volumes, out, acc_out, out_seqs, out_accs);
 		write_blocks(job, volumes, out, acc_out, block_mapping);
 		done.fetch_add();
 		job.finish_step();
 	}
 	else
 		done.await(1);
-	uint64_t letters, seq_count;
+	uint64_t letters, seq_count, minichunk_count;
 	ifstream input_letters_file(input_letters);
-	input_letters_file >> letters >> seq_count;
+	input_letters_file >> letters >> seq_count >> minichunk_count;
 	if(!input_letters_file)
 		throw runtime_error("Error opening file " + input_letters);
 	volumes.set_letter_count(letters);
 	job.register_sync_file(input_letters);
-	if (first_round_linear) {
+	if (first_round_linear && config.mutual_cover.present()) {
 		double block_gb;
 		int index_chunks;
-		tie(block_gb, index_chunks) = ::block_size(job.mem_limit, letters, Sensitivity::FAST, true, config.threads_); // TODO take cluster steps into account here
+		tie(block_gb, index_chunks) = ::block_size(job.mem_limit, letters, Sensitivity::FAST, true, config.threads_, config.mutual_cover.present()); // TODO take cluster steps into account here
 		config.lowmem_ = index_chunks;
 	}
 	job.set_max_oid(seq_count - 1);
-	return input_parts;
+	return std::make_pair(out_seqs, out_accs);
 }

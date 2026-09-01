@@ -27,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "data/sequence_set.h"
 #include "stats/cbs.h"
 #include "flags.h"
+#include "util/memory/memory_resource.h"
 #include "util/parallel/thread_pool.h"
 #include "align/def.h"
 #include "dp/score_profile.h"
@@ -181,6 +182,7 @@ struct Params {
 	HspValues v;
 	Statistics& stat;
 	ThreadPool* thread_pool;
+	std::pmr::memory_resource* pool = nullptr;
 };
 
 enum { BINS = 6, SCORE_BINS = 3, ALGO_BINS = 2 };
@@ -287,7 +289,7 @@ namespace BandedSwipe {
 std::list<Hsp> swipe(const Targets& targets, Params& params);
 std::list<Hsp> swipe_set(const SequenceSet::ConstIterator begin, const SequenceSet::ConstIterator end, Params& params);
 int bin(HspValues v, int query_len, int score, int ungapped_score, const int64_t dp_size, unsigned score_width, const Loc mismatch_est);
-std::list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg, std::pmr::monotonic_buffer_resource& pool);
+std::list<Hsp> anchored_swipe(Targets& targets, const DP::AnchoredSwipe::Config& cfg, std::pmr::memory_resource& pool);
 
 }
 

@@ -34,7 +34,7 @@ struct SequenceSet;
 
 struct Masking
 {
-	Masking(const ScoreMatrix&score_matrix);
+	Masking(const ScoreMatrix& score_matrix);
 	~Masking();
 	MaskingStat operator()(Letter *seq, size_t len, const MaskingAlgo algo, const size_t block_id, MaskingTable* table = nullptr) const;
 	void mask_bit(Letter *seq, size_t len) const;

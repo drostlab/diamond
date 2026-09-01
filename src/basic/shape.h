@@ -45,14 +45,14 @@ struct Shape
 		//long_mask_sse_(_mm_setzero_si128())
 	{
 		assert(strlen(code) <= 32);
-		memset(positions_, 0, sizeof(uint32_t)*Const::max_seed_weight);
+		memset(positions_, 0, sizeof(uint32_t) * Const::max_seed_weight);
 		const uint64_t b = Reduction::get_reduction().bit_size();
 		unsigned i (0);
-		for(;i<strlen(code);++i) {
+		for (; i < strlen(code); ++i) {
 			rev_mask_ <<= 1;
 			long_mask_ <<= b;
 			//long_mask_sse_ = _mm_slli_si128(long_mask_sse_, 1);
-			if(code[i] == '1') {
+			if (code[i] == '1') {
 				assert(weight_ < Const::max_seed_weight);
 				positions_[weight_] = i;
 				++weight_;

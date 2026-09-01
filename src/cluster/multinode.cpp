@@ -18,7 +18,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <inttypes.h>
+#include <malloc.h>
 #include <cstdarg>
+#include <algorithm>
+#include <string>
 #include <unordered_set>
 #include "basic/config.h"
 #include "volume.h"
@@ -46,27 +49,43 @@ using std::unordered_set;
 
 static OId write_representative_ids(Job& job, const string& clusters_file);
 
+#ifdef WIN32
+static const char* const LOG_EOL = "\r\n";
+#else
+static const char* const LOG_EOL = "\n";
+#endif
+
+std::string Job::log_prefix() const {
+	const long long int t = std::chrono::duration_cast<std::chrono::duration<long long int>>(std::chrono::system_clock::now() - start_).count();
+	char buffer[128];
+	snprintf(buffer, sizeof(buffer), "[%" PRId64 ", %lli] ", worker_id_, t);
+	return string(buffer);
+}
+
 void Job::log(const char* format, ...) {
 	char buffer[1024];
-	const long long int t = std::chrono::duration_cast<std::chrono::duration<long long int>>(std::chrono::system_clock::now() - start_).count();
-	char* ptr = buffer + snprintf(buffer, 1024, "[%" PRId64 ", %lli] ", worker_id_, t);
 	va_list args;
 	va_start(args, format);
-	int i = vsnprintf(ptr, 1024 - (ptr - buffer), format, args);
-#ifdef WIN32
-	ptr[i++] = '\r';
-#endif
-	ptr[i++] = '\n';
-	ptr[i] = '\0';
-	*message_stream << buffer;
-	log_file_->push(buffer);
+	const int i = vsnprintf(buffer, sizeof(buffer), format, args);
 	va_end(args);
+	if (i < 0)
+		return;
+	log_raw(string(buffer, std::min((size_t)i, sizeof(buffer) - 1)));
+}
+
+void Job::log_raw(const string& message) {
+	size_t n = message.size();
+	while (n > 0 && (message[n - 1] == '\n' || message[n - 1] == '\r'))
+		--n;
+	const string s = log_prefix() + message.substr(0, n) + LOG_EOL;
+	*message_stream << s;
+	log_file_->push(s);
 }
 
 void Job::log(const ClusterStats& stats) {
 	std::ostringstream ss;
 	//stats.masking_stat.print(ss);
-	log(ss.str().c_str());
+	log_raw(ss.str());
 	//log("Seeds considered: %" PRIu64, stats.seeds_considered);
 	//log("Seeds indexed: %" PRIu64, stats.seeds_indexed);
 	log("Extensions computed: %" PRIu64, stats.extensions_computed);
@@ -74,27 +93,29 @@ void Job::log(const ClusterStats& stats) {
 	//log("Alignments passing all filters: %" PRIu64, stats.hits_filtered);
 }
 
-static void run_block_combos(Job& job, const VolumedFile& volumes, const string& base_dir, const string& aln_path) {
+static void run_block_combos(Job& job, const VolumedFile& superblocks, const string& base_dir, const string& aln_path) {
 	int64_t r;
 	const bool lin_index = use_lin_index(job);
 	if (lin_index) {
-		configure_round(job, volumes);
-		build_lin_indices(job, volumes);
+		configure_round(job, superblocks.letter_count());
+		build_lin_indices(job, superblocks);
 		if (!job.goon())
 			return;
 	}
 	Atomic q(base_dir + "queue", job);
 	Atomic finished(base_dir + "finished", job);
-	const int64_t n = (int64_t)volumes.size();
+	const int64_t n = (int64_t)superblocks.size();
 	while (job.goon() && (r = q.fetch_add(), r < n)) {
-		unique_ptr<vector<BitVector>> seed_hit_table(new vector<BitVector>());
+		unique_ptr<vector<BitVector>> seed_hit_table;
+		if (r > 0)
+			seed_hit_table.reset(new vector<BitVector>());
 		for (int i = 0; i <= r; ++i) {
 			job.log("Searching blocks. Blocks=%lli,%lli", r + 1, i + 1);
 			/*if (!seed_hit_table->empty()) {
 				for (size_t i = 0; i < seed_hit_table->size(); ++i)
 					job.log("Seed hit table paired positions shape %zu: %zu/%zu", i, seed_hit_table->operator[](i).one_count(), seed_hit_table->operator[](i).size());
 			}*/
-			run_search(job, volumes, r, i, base_dir, seed_hit_table);
+			run_search(job, superblocks, r, i, base_dir, seed_hit_table);
 		}
 		finished.fetch_add();
 		job.finish_step();
@@ -107,10 +128,10 @@ static void run_block_combos(Job& job, const VolumedFile& volumes, const string&
 	Atomic concat_done(base_dir + "concat_done", job);
 	if (concat_lock.fetch_add() == 0) {
 		if (lin_index)
-			remove_lin_indices(volumes);
+			remove_lin_indices(superblocks);
 		job.log("Concatenating alignment files");
 		ofstream out(aln_path);
-		for (uint64_t r = 0; r < volumes.size(); ++r) {
+		for (uint64_t r = 0; r < superblocks.size(); ++r) {
 			for (uint64_t i = 0; i <= r; ++i) {
 				const string src = base_dir + std::to_string(r) + "_" + std::to_string(i) + ".tsv";
 				std::ifstream in(src, std::ios::binary);
@@ -132,39 +153,40 @@ static void run_block_combos(Job& job, const VolumedFile& volumes, const string&
 		concat_done.await(1);
 }
 
-static pair<string, uint64_t> run_round(Job& job, const VolumedFile& volumes) {
+static pair<string, uint64_t> run_round(Job& job, const VolumedFile& superblocks, const string& round_minichunks) {
 	if (config.mutual_cover.present()) {
 		config.min_length_ratio = config.sensitivity < Sensitivity::LINCLUST_40 ?
 			std::min(config.mutual_cover.get_present() / 100 + 0.05, 1.0)
 			: config.mutual_cover.get_present() / 100 - 0.05;
 	}
 	const bool linear = job.is_linear_round();
-	job.log("Starting round %i/%i sensitivity=%s linear=%s", job.round() + 1, job.round_count(), to_string(config.sensitivity).c_str(), linear ? "true" : "false");
-	job.set_round(volumes.sparse_records());
+	job.log("Starting round %i/%i sensitivity=%s linear=%s sequence letters=%" PRIu64, job.round() + 1, job.round_count(), to_string(config.sensitivity).c_str(), linear ? "true" : "false", superblocks.letter_count());
 	const int64_t BUF_SIZE = 4096;
 	const string base_dir = job.base_dir() + PATH_SEPARATOR + "alignments" + PATH_SEPARATOR;
 	const string aln_path = job.base_dir() + "alignments.tsv";
 	const bool mutual_cover = config.mutual_cover.present();
 	job.make_temp_dir(base_dir);
-	if(linear)
-		run_block_combos(job, volumes, base_dir, aln_path);
+	if (linear) {
+		run_block_combos(job, superblocks, base_dir, aln_path);
+	}
 	else {
 		unique_ptr<vector<BitVector>> seed_hit_table;
-		run_search(job, volumes, -1, -1, base_dir, seed_hit_table);
-	}
+		run_search(job, superblocks, -1, -1, base_dir, seed_hit_table);
+	}	
 	if (!job.goon())
 		return pair<string, uint64_t>("", 0);
+	superblocks.remove(false, linear && config.mutual_cover.blank(), false);
 	if (job.last_round()) {
 		if (!config.fasta_index_file.empty())
 			remove_tmp_file(config.fasta_index_file);
 		if (config.reps_out.empty())
-			volumes.remove(job.round() > 0, true, false);
+			superblocks.remove(job.round() > 0, true, false);
 	}	
 	Atomic gvc_lock(base_dir + "gvc_lock", job);
 	Atomic gvc_done(base_dir + "gvc_done", job);
 	if (gvc_lock.fetch_add() == 0) {
 		job.log("Running greedy vertex cover");
-		config.max_oid = volumes.max_oid();
+		config.max_oid = job.max_oid();
 		config.edges = aln_path;
 		config.edge_format = mutual_cover ? "triplet" : "";
 		config.symmetric = mutual_cover;
@@ -182,10 +204,12 @@ static pair<string, uint64_t> run_round(Job& job, const VolumedFile& volumes) {
 	}
 	else
 		gvc_done.await(1);
+	gvc_lock.close();
+	gvc_done.close();
 	rmdir(base_dir.c_str());
 	if (!job.goon())
 		return pair<string, uint64_t>("", 0);
-	return get_reps(job, volumes);
+	return get_reps(job, round_minichunks);
 }
 
 static OId write_representative_ids(Job& job, const string& clusters_file) {
@@ -222,16 +246,16 @@ void multinode() {
 	const string output_file = config.output_file;
 	config.file_buffer_size = 64 * 1024; // TODO
 	const bool linclust = config.command == ::Config::LINCLUST;
-	const vector<string> steps = Cluster::cluster_steps(config.approx_min_id.present() ? config.approx_min_id : config.min_id, linclust); // TODO
+	const vector<string> rounds = Cluster::cluster_steps(config.approx_min_id.present() ? config.approx_min_id : config.min_id, linclust); // TODO
 	if (parallel) {
-		for (const string& step : steps) {
+		for (const string& step : rounds) {
 			if (!ends_with(step, "_lin"))
 				throw runtime_error("Parallel workflow only supports linclust workflows, support for all-vs-all rounds will be added in a future version.");
 		}
 	}
 	const double evalue_cutoff = config.max_evalue,
 		target_approx_id = config.approx_min_id.present() ? config.approx_min_id.get_present() : 0.0;
-	const bool anchored_swipe = config.anchored_swipe, is_linclust = Cluster::is_linclust(steps);
+	const bool anchored_swipe = config.anchored_swipe, is_linclust = Cluster::is_linclust(rounds);
 	// TODO
 	config.hamming_ext = config.approx_min_id.present() ? config.approx_min_id.get_present() >= 50.0 : false;
 	//config.freq_masking = true;
@@ -268,57 +292,76 @@ void multinode() {
 		job.log("#Volumes = %lli", volumes.size());
 	}
 
-	if (max_open_files_per_process() < 1024)
-		raise_open_files_limit(1024);
+	if (max_open_files_per_process() < 1024) {
+		const long n = raise_open_files_limit(1024);
+		job.log("Raised open files limit to %li", n);
+	} else
+		job.log("Open files limit = %li", max_open_files_per_process());
 	
-	string reps;
+	string rep_minichunks, input_minichunks_seqs, input_minichunks_accs;
 	uint64_t letters = 0;
-	job.set_round_count((int)steps.size(), steps);
-	const string input_parts = len_sort(job, volumes);
+	job.set_round_count((int)rounds.size(), rounds);
+	tie(input_minichunks_seqs, input_minichunks_accs) = len_sort(job, volumes);
 	if (!job.goon())
 		return;
-	VolumedFile input_volumes(input_parts);
-	input_volumes.set_letter_count(volumes.letter_count());
 	const vector<string> ccd_arg = config.connected_component_depth;
 
-	for (size_t i = 0; i < steps.size(); ++i) {
-		const bool linear_round = ends_with(steps[i], "_lin");
-		config.sensitivity = from_string<Sensitivity>(rstrip(steps[i], "_lin"));
+	for (size_t i = 0; i < rounds.size(); ++i) {
+		const bool linear_round = ends_with(rounds[i], "_lin");
+		config.sensitivity = from_string<Sensitivity>(rstrip(rounds[i], "_lin"));
 		const vector<string> round_approx_id = config.round_approx_id.empty() ? Cluster::default_round_approx_id(job.round_count()) : config.round_approx_id;
 		if (config.min_id == 0.0) {
-			config.approx_min_id = std::max(target_approx_id, Cluster::round_value(round_approx_id, "--round-approx-id", i, (int)steps.size()));
+			config.approx_min_id = std::max(target_approx_id, Cluster::round_value(round_approx_id, "--round-approx-id", i, (int)rounds.size()));
 			job.log("Approximate sequence id cutoff (round) = %f", config.approx_min_id.get_present());
 		}
-		config.max_evalue = i == steps.size() - 1 ? evalue_cutoff : std::min(evalue_cutoff, CASCADED_ROUND_MAX_EVALUE);
+		config.max_evalue = i == rounds.size() - 1 ? evalue_cutoff : std::min(evalue_cutoff, CASCADED_ROUND_MAX_EVALUE);
 		config.anchored_swipe = anchored_swipe && (linclust || !config.lin_stage1_query);
 		if (anchored_swipe)
 			config.extension_mode = "banded-fast";
-		const int ccd = Cluster::round_ccd(ccd_arg, i, steps.size(), linear_round);
+		const int ccd = Cluster::round_ccd(ccd_arg, i, rounds.size(), linear_round);
 		config.connected_component_depth.clear();
 		config.connected_component_depth.push_back(std::to_string(ccd));
-		tie(reps, letters) = run_round(job, i == 0 ? input_volumes : VolumedFile(reps, letters));
+
+		const string superblocks = job.round() == 0 ? make_merged_blocks(job, input_minichunks_seqs, job.base_dir() + "input_superblocks" + PATH_SEPARATOR, volumes.letter_count())
+			: make_merged_blocks(job, rep_minichunks, job.base_dir() + "input_superblocks" + PATH_SEPARATOR, volumes.letter_count());
+		VolumedFile input_volumes(superblocks);
+		input_volumes.set_letter_count(volumes.letter_count());
+
+		tie(rep_minichunks, letters) = run_round(job, input_volumes, i == 0 ? input_minichunks_seqs : rep_minichunks);
 		if (!job.goon())
 			return;
-		if (i < steps.size() - 1)
+		if (i < rounds.size() - 1)
 			job.next_round();
+#ifndef _MSC_VER
+		malloc_trim(0);
+#endif
 	}
 	Atomic output_lock(job.root_dir() + PATH_SEPARATOR + "output_lock", job);
 	config.output_file = output_file;
 	if (output_lock.fetch_add() == 0) {
-		merge(job, input_volumes, hdr_format);
+		VolumedFile acc_vols(input_minichunks_accs);
+		merge(job, acc_vols, hdr_format);
 		job.log(job.stats());
 		output_lock.close();
 		lock.close();
 		done.close();
+		if (parallel)
+			return;
 		job.finish();
 		remove_tmp_file(input_vols);
-		for (size_t i = 0; i < steps.size(); ++i) {
+		remove_tmp_file(job.root_dir() + "input_minichunks" + PATH_SEPARATOR + "seqs.tsv");
+		for (size_t i = 0; i < rounds.size(); ++i) {
 			remove_tmp_file(job.base_dir(i) + "rep_ids");
 			remove_tmp_file(job.base_dir(i) + PATH_SEPARATOR + "reps" + PATH_SEPARATOR + "reps.tsv");
+			remove_tmp_file(job.base_dir(i) + PATH_SEPARATOR + "rep_minichunks" + PATH_SEPARATOR + "reps.tsv");
+			remove_tmp_file(job.base_dir(i) + PATH_SEPARATOR + "input_superblocks" + PATH_SEPARATOR + "volumes.tsv");
+			rmdir(job.base_dir(i) + PATH_SEPARATOR + "input_superblocks");
 			rmdir(job.base_dir(i) + PATH_SEPARATOR + "reps");
+			rmdir(job.base_dir(i) + PATH_SEPARATOR + "rep_minichunks");
 			rmdir(job.base_dir(i));
 		}
-		input_volumes.remove(false, false, true);
+		//input_volumes.remove(false, false, true);
+		rmdir(job.root_dir() + "input_minichunks");
 		rmdir(config.tmpdir);
 	}
 }

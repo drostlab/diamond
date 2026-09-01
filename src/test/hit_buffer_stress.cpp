@@ -44,7 +44,7 @@ struct HitBufferTestResult {
 	uint64_t actual_checksum;
 };
 
-static HitBufferTestResult run_single_mode(bool membuf_mode)
+static HitBufferTestResult run_single_mode(bool membuf_mode, bool hash_key)
 {
 	static constexpr int      BIN_COUNT       = 32;
 	static constexpr int      QUERIES_PER_BIN = 1000;
@@ -68,7 +68,7 @@ static HitBufferTestResult run_single_mode(bool membuf_mode)
 	Search::HitBuffer buf(
 		key_partition, ".", false,
 		QUERY_CONTEXTS, THREAD_COUNT,
-		max_query, max_target, search_pool);
+		max_query, max_target, search_pool, hash_key);
 
 	std::atomic<uint64_t> expected_cs{ 0 };
 	{
@@ -99,12 +99,13 @@ static HitBufferTestResult run_single_mode(bool membuf_mode)
 	}
 
 	buf.finish_writing();
+	buf.plan_bin_groups(uint64_t(4 * QUERIES_PER_BIN * HITS_PER_QUERY) * sizeof(Search::Hit));
 	buf.alloc_buffer();
 
 	size_t   actual_total = 0;
 	uint64_t actual_cs    = 0;
 
-	while (buf.load(std::numeric_limits<size_t>::max())) {
+	while (buf.load()) {
 		Search::Hit* hits;
 		size_t count;
 		std::tie(hits, count, std::ignore, std::ignore) = buf.retrieve();
@@ -138,13 +139,17 @@ int run_hit_buffer_stress_test()
 	std::cout << "=====================" << std::endl;
 	std::cout << "Threads = " << config.threads_ << std::endl;
 
-	int failures = 0;
-	for (bool membuf : { true, false }) {
+	int failures = 0, modes = 0;
+	/* Hashed keys scatter every writer over all bins instead of confining it to the one
+	   bin its query range maps to, so both key modes are exercised. */
+	for (bool membuf : { true, false })
+		for (bool hash_key : { false, true }) {
+		++modes;
 		const char* mode = membuf ? "in-memory (membuf)" : "disk";
-		std::cout << "  Mode: " << mode << " ... " << std::flush;
+		std::cout << "  Mode: " << mode << (hash_key ? ", hashed keys" : ", range keys") << " ... " << std::flush;
 		HitBufferTestResult r;
 		try {
-			r = run_single_mode(membuf);
+			r = run_single_mode(membuf, hash_key);
 		}
 		catch (const std::exception& e) {
 			std::cout << "EXCEPTION: " << e.what() << std::endl;
@@ -166,7 +171,7 @@ int run_hit_buffer_stress_test()
 	}
 
 	std::cout << "  Result: "
-		<< (2 - failures) << "/2 passed" << std::endl;
+		<< (modes - failures) << '/' << modes << " passed" << std::endl;
 	std::cout << "=====================" << std::endl;
 	return failures;
 }

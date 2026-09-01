@@ -65,9 +65,10 @@ struct FastaFile : public SequenceFile
 	bool is_fasta() const noexcept {
 		return format_ == SeqFileFormat::FASTA;
 	}
-	void advance_seq_count(OId n) {
+	virtual void advance_seq_count(OId n) override {
 		oid_ += n;
-	}
+	}	
+	void rewind();
 	virtual RawChunk* raw_chunk(size_t bytes, Flags flags) override;
 	virtual int raw_chunk_no() const override {
 		return raw_chunk_no_;

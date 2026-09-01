@@ -23,7 +23,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util/simd/transpose.h"
 #include "ungapped.h"
 #include "util/simd/dispatch.h"
-#include "util/simd/vector.h"
 
 using namespace DISPATCH_ARCH;
 
@@ -32,7 +31,7 @@ namespace DP { namespace DISPATCH_ARCH {
 void window_ungapped(const Letter *query, const Letter **subjects, int subject_count, int window, int *out) {
 #if defined(__SSE4_1__) | defined(__aarch64__)
 	using Sv = ScoreVector<int8_t, SCHAR_MIN>;
-	typedef ::DISPATCH_ARCH::SIMD::Vector<int8_t> SeqV;
+	using Register = decltype(Sv::data_);
 	constexpr int CHANNELS = ::DISPATCH_ARCH::ScoreTraits<Sv>::CHANNELS;
 	assert(subject_count <= CHANNELS);
 	
@@ -42,14 +41,14 @@ void window_ungapped(const Letter *query, const Letter **subjects, int subject_c
 	std::copy(subjects, subjects + subject_count, subject_ptr);
 
 	for (int i = 0; i < window; i += CHANNELS) {
-		transpose(subject_ptr, subject_count, subject_vector, SeqV());
+		transpose(subject_ptr, subject_count, subject_vector, Register());
 		for (size_t j = 0; j < CHANNELS && query < query_end;) {
-			SeqV subject_letters(&subject_vector[j * CHANNELS]);
+			const Sv subject_letters(&subject_vector[j * CHANNELS]);
 			unsigned query_letter = unsigned(*query);
 #ifdef SEQ_MASK
 			query_letter &= (unsigned)LETTER_MASK;
 #endif
-			const Sv match(query_letter, subject_letters);
+			const Sv match(query_letter, subject_letters.data_);
 			score = score + match;
 			best = max(best, score);
 			++query;

@@ -26,6 +26,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define HAVE_AVX2(x)
 #endif
 
+#ifdef WITH_AVX512
+#define HAVE_AVX512(x) x
+#else
+#define HAVE_AVX512(x)
+#endif
+
 #ifdef WITH_SSE4_1
 #define HAVE_SSE4_1(x) x
 #else
@@ -38,7 +44,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define HAVE_NEON(x)
 #endif
 
-#if defined(WITH_NEON) | defined(WITH_AVX2) | defined(WITH_SSE4_1)
+#if defined(WITH_NEON) | defined(WITH_AVX512) | defined(WITH_AVX2) | defined(WITH_SSE4_1)
 #define HAVE_SIMD(x) x
 #else
 #define HAVE_SIMD(x)
@@ -46,187 +52,71 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #if ARCH_ID == 0
 
-#define DISPATCH_0V(name)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { void name(); })\
-HAVE_AVX2(namespace ARCH_AVX2 { void name(); })\
-HAVE_NEON(namespace ARCH_NEON { void name(); })\
-void name() {\
+/* The parameter and argument lists are passed as parenthesized blobs so that the
+   commas separating them are hidden from the preprocessor. */
+
+#define DISPATCH_DECL(ret, name, params)\
+HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name params; })\
+HAVE_AVX2(namespace ARCH_AVX2 { ret name params; })\
+HAVE_AVX512(namespace ARCH_AVX512 { ret name params; })\
+HAVE_NEON(namespace ARCH_NEON { ret name params; })
+
+/* `return f(...);` is well formed in a function returning void as long as f does,
+   so this also serves the void variants below. */
+#define DISPATCH_BODY(name, args)\
 HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: ARCH_NEON::name(); break;)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: ARCH_AVX2::name(); break;)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: ARCH_SSE4_1::name(); break;)\
+HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name args;)\
+HAVE_AVX512(case ::SIMD::Arch::AVX512: return ARCH_AVX512::name args;)\
+HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name args;)\
+HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name args;)\
 HAVE_SIMD(default:)\
-ARCH_GENERIC::name();\
-HAVE_SIMD(})\
+return ARCH_GENERIC::name args;\
+HAVE_SIMD(})
+
+#define DISPATCH_FN(ret, name, params, args)\
+DISPATCH_DECL(ret, name, params)\
+ret name params {\
+DISPATCH_BODY(name, args)\
 }
+
+#define DISPATCH_0V(name)\
+DISPATCH_FN(void, name, (), ())
 
 #define DISPATCH_1V(name, t1, n1)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { void name(t1 n1); })\
-HAVE_AVX2(namespace ARCH_AVX2 { void name(t1 n1); })\
-HAVE_NEON(namespace ARCH_NEON { void name(t1 n1); })\
-void name(t1 n1) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: ARCH_NEON::name(n1); break;)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: ARCH_AVX2::name(n1); break;)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: ARCH_SSE4_1::name(n1); break;)\
-HAVE_SIMD(default:)\
-ARCH_GENERIC::name(n1);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(void, name, (t1 n1), (n1))
 
 #define DISPATCH_1(ret, name, t1, n1)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1); })\
-ret name(t1 n1) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1), (n1))
 
 #define DISPATCH_2(ret, name, t1, n1, t2, n2)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2); })\
-ret name(t1 n1, t2 n2) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2), (n1, n2))
 
 #define DISPATCH_3(ret, name, t1, n1, t2, n2, t3, n3)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2, t3 n3); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2, t3 n3); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2, t3 n3); })\
-ret name(t1 n1, t2 n2, t3 n3) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2, n3);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2, n3);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2, n3);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2, n3);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3), (n1, n2, n3))
 
 #define DISPATCH_3V(name, t1, n1, t2, n2, t3, n3)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { void name(t1 n1, t2 n2, t3 n3); })\
-HAVE_AVX2(namespace ARCH_AVX2 { void name(t1 n1, t2 n2, t3 n3); })\
-HAVE_NEON(namespace ARCH_NEON { void name(t1 n1, t2 n2, t3 n3); })\
-void name(t1 n1, t2 n2, t3 n3) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: ARCH_NEON::name(n1, n2, n3); break;)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: ARCH_AVX2::name(n1, n2, n3); break;)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: ARCH_SSE4_1::name(n1, n2, n3); break;)\
-HAVE_SIMD(default:)\
-ARCH_GENERIC::name(n1, n2, n3);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3), (n1, n2, n3))
 
 #define DISPATCH_4(ret, name, t1, n1, t2, n2, t3, n3, t4, n4)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2, t3 n3, t4 n4); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2, t3 n3, t4 n4); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2, t3 n3, t4 n4); })\
-ret name(t1 n1, t2 n2, t3 n3, t4 n4) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2, n3, n4);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2, n3, n4);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2, n3, n4);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2, n3, n4);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4), (n1, n2, n3, n4))
 
 #define DISPATCH_5(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5); })\
-ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2, n3, n4, n5);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2, n3, n4, n5);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2, n3, n4, n5);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2, n3, n4, n5);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5), (n1, n2, n3, n4, n5))
 
 #define DISPATCH_6(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6); })\
-ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2, n3, n4, n5, n6);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2, n3, n4, n5, n6);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2, n3, n4, n5, n6);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2, n3, n4, n5, n6);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6), (n1, n2, n3, n4, n5, n6))
 
 #define DISPATCH_6V(name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6); })\
-HAVE_AVX2(namespace ARCH_AVX2 { void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6); })\
-HAVE_NEON(namespace ARCH_NEON { void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6); })\
-void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: ARCH_NEON::name(n1, n2, n3, n4, n5, n6); break;)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: ARCH_AVX2::name(n1, n2, n3, n4, n5, n6); break;)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: ARCH_SSE4_1::name(n1, n2, n3, n4, n5, n6); break;)\
-HAVE_SIMD(default:)\
-ARCH_GENERIC::name(n1, n2, n3, n4, n5, n6);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6), (n1, n2, n3, n4, n5, n6))
 
 #define DISPATCH_7(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6, t7, n7)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7); })\
-ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2, n3, n4, n5, n6, n7);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2, n3, n4, n5, n6, n7);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2, n3, n4, n5, n6, n7);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2, n3, n4, n5, n6, n7);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7), (n1, n2, n3, n4, n5, n6, n7))
 
 #define DISPATCH_7V(name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6, t7, n7)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7); })\
-HAVE_AVX2(namespace ARCH_AVX2 { void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7); })\
-HAVE_NEON(namespace ARCH_NEON { void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7); })\
-void name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: ARCH_NEON::name(n1, n2, n3, n4, n5, n6, n7); break;)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: ARCH_AVX2::name(n1, n2, n3, n4, n5, n6, n7); break;)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: ARCH_SSE4_1::name(n1, n2, n3, n4, n5, n6, n7); break;)\
-HAVE_SIMD(default:)\
-ARCH_GENERIC::name(n1, n2, n3, n4, n5, n6, n7);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(void, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7), (n1, n2, n3, n4, n5, n6, n7))
 
 #define DISPATCH_8(ret, name, t1, n1, t2, n2, t3, n3, t4, n4, t5, n5, t6, n6, t7, n7, t8, n8)\
-HAVE_SSE4_1(namespace ARCH_SSE4_1 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8); })\
-HAVE_AVX2(namespace ARCH_AVX2 { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8); })\
-HAVE_NEON(namespace ARCH_NEON { ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8); })\
-ret name(t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8) {\
-HAVE_SIMD(switch(::SIMD::arch()) {)\
-HAVE_NEON(case ::SIMD::Arch::NEON: return ARCH_NEON::name(n1, n2, n3, n4, n5, n6, n7, n8);)\
-HAVE_AVX2(case ::SIMD::Arch::AVX2: return ARCH_AVX2::name(n1, n2, n3, n4, n5, n6, n7, n8);)\
-HAVE_SSE4_1(case ::SIMD::Arch::SSE4_1: return ARCH_SSE4_1::name(n1, n2, n3, n4, n5, n6, n7, n8);)\
-HAVE_SIMD(default:)\
-return ARCH_GENERIC::name(n1, n2, n3, n4, n5, n6, n7, n8);\
-HAVE_SIMD(})\
-}
+DISPATCH_FN(ret, name, (t1 n1, t2 n2, t3 n3, t4 n4, t5 n5, t6 n6, t7 n7, t8 n8), (n1, n2, n3, n4, n5, n6, n7, n8))
 
 #else
 

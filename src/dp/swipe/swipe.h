@@ -88,11 +88,11 @@ struct SwipeProfile
 {
 
 #ifdef __SSSE3__
-	inline void set(typename ScoreTraits<Sv>::Vector seq)
+	inline void set(const Sv& seq)
 	{
 		assert(sizeof(data_) / sizeof(Sv) >= value_traits.alphabet_size);
 		for (unsigned j = 0; j < AMINO_ACID_COUNT; ++j)
-			data_[j] = Sv(j, seq);
+			data_[j] = Sv(j, seq.data_);
 	}
 #endif
 
@@ -102,7 +102,7 @@ struct SwipeProfile
 	}
 
 	void set(const int8_t** target_scores) {
-#if ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 		transpose(target_scores, 32, (int8_t*)data_, __m256i());
 		for (size_t i = 0; i < AMINO_ACID_COUNT; ++i)
 			data_[i].expand_from_8bit();

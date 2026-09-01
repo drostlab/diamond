@@ -81,7 +81,8 @@ static void align_centroid(CentroidId centroid, ReorderQueue<TextBuffer*, Cluste
 
 	const HauserCorrection cbs(centroid_seq);
 	const string centroid_seqid = cfg.lazy_titles ? cfg.db->seqid(centroid_oid, false, false) : cfg.centroid_block->ids()[centroid_id];
-	DP::Params p{ centroid_seq, centroid_seqid.c_str(), Frame(0), centroid_seq.length(), config.comp_based_stats_.get(Stats::DEFAULT_CBS) == 1 ? cbs.int8.data() : nullptr, DP::Flags::FULL_MATRIX, false, 0, 0, cfg.hsp_values, stats, &tp };
+	DP::Params p{ centroid_seq, centroid_seqid.c_str(), Frame(0), centroid_seq.length(), config.comp_based_stats_.get(Stats::DEFAULT_CBS) == 1 ? cbs.int8.data() : nullptr,
+		DP::Flags::FULL_MATRIX, false, 0, 0, cfg.hsp_values, stats, &tp };
 	list<Hsp> hsps = DP::BandedSwipe::swipe(dp_targets, p);
 
 	TextBuffer* buf = new TextBuffer;
@@ -109,7 +110,7 @@ static void align_centroid(CentroidId centroid, ReorderQueue<TextBuffer*, Cluste
 File* realign_block_pair(CentroidId begin, CentroidId end, Cfg& cfg) {
 	File* out = new File { Temporary() };
 	Cluster::OutputWriter writer(out);
-	ReorderQueue<TextBuffer*, Cluster::OutputWriter> output_sink(begin, writer);
+	ReorderQueue<TextBuffer*, Cluster::OutputWriter> output_sink(begin, writer, true);
 	auto worker = [&](ThreadPool& tp, int64_t i) {
 		Statistics stats;
 		align_centroid(i, output_sink, stats, tp, cfg);

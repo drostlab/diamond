@@ -25,6 +25,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "def.h"
 #include "util/geo/geo.h"
 #include "stats/cbs.h"
+#include "util/memory/mem_profile.h"
 
 using std::runtime_error;
 using std::vector;
@@ -41,34 +42,18 @@ namespace Extension {
 int band(int len, const Mode mode) {
 	if (config.padding > 0)
 		return config.padding;
-	if (mode == Mode::BANDED_FAST) {
-		if (len < 50)
-			return 12;
-		if (len < 100)
-			return 16;
-		if (len < 250)
-			return 30;
-		if (len < 350)
-			return 40;
-		return 64;
-	}
-	else {
-		if (len < 50)
-			return 15;
-		if (len < 100)
-			return 20;
-		if (len < 150)
-			return 30;
-		if (len < 200)
-			return 50;
-		if (len < 250)
-			return 60;
-		if (len < 350)
-			return 100;
-		if (len < 500)
-			return 120;
-		return 150;
-	}
+
+	static constexpr int THRESHOLD[] = { 50, 100, 150, 200, 250, 350, 500 };
+	static constexpr int BAND[2][8] = {
+		{ 15, 20, 30, 50, 60, 100, 120, 150 },  // default
+		{ 12, 16, 30, 30, 30,  40,  64,  64 },  // BANDED_FAST
+	};
+
+	int bucket = 0;
+	for (const int t : THRESHOLD)
+		bucket += (len >= t);
+
+	return BAND[mode == Mode::BANDED_FAST][bucket];
 }
 
 static int hsp_band(int base_band, int qlen, int tlen, const ApproxHsp& hsp) {
@@ -179,9 +164,12 @@ static void add_dp_targets(const WorkTarget& target,
 	}
 }
 
-vector<Target> align(vector<WorkTarget>& targets, const Query& query, DP::Flags flags, const HspValues hsp_values, const Mode mode, ThreadPool& tp, const Search::Config& cfg, Statistics& stat, std::pmr::monotonic_buffer_resource& pool) {
+TargetList align(vector<WorkTarget>& targets, const Query& query, DP::Flags flags, const HspValues hsp_values, const Mode mode, ThreadPool& tp,
+	const Search::Config& cfg, Statistics& stat, std::pmr::memory_resource& pool)
+{
+	MEM_SCOPE("extend/dp-targets");
 	array<DP::Targets, MAX_CONTEXT> dp_targets;
-	vector<Target> r;
+	TargetList r(&pool);
 	if (targets.empty())
 		return r;
 	r.reserve(targets.size());
@@ -222,7 +210,8 @@ vector<Target> align(vector<WorkTarget>& targets, const Query& query, DP::Flags 
 			-1,
 			hsp_values,
 			stat,
-			&tp
+			&tp,
+			&pool
 		};
 		DP::AnchoredSwipe::Config acfg{ query.sequence[frame],
 			query.composition_bias(frame),
@@ -233,16 +222,18 @@ vector<Target> align(vector<WorkTarget>& targets, const Query& query, DP::Flags 
 			r[hsp.front().swipe_target].add_hit(hsp, hsp.begin());
 	}
 	
-	vector<Target> r2;
-	r2.reserve(r.size());
-	for (vector<Target>::iterator i = r.begin(); i != r.end(); ++i)
+	TargetList::iterator out = r.begin();
+	for (TargetList::iterator i = r.begin(); i != r.end(); ++i)
 		if (i->filter_evalue != DBL_MAX) {
 			if(config.max_hsps == 1 || have_coords(hsp_values))
 				i->inner_culling();
-			r2.push_back(std::move(*i));
+			if (out != i)
+				*out = std::move(*i);
+			++out;
 		}
+	r.erase(out, r.end());
 
-	return r2;
+	return r;
 }
 
 }

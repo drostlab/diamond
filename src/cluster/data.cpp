@@ -59,6 +59,18 @@ struct RepWriteConfig {
 	FileStack* reps_list;
 };
 
+// Wakes up all threads blocked on the queue. The stop flag of the thread pool is only polled in
+// between queue operations, so a thread that is waiting inside the queue semaphore will never
+// observe it, and joining that thread (e.g. in ~SimpleThreadPool while an exception is unwinding
+// the stack) deadlocks.
+struct QueueAbortGuard {
+	Queue<RepChunk>* queue;
+	~QueueAbortGuard() {
+		if (queue)
+			queue->abort();
+	}
+};
+
 static tuple<OId, uint64_t, uint64_t> write_reps(Job& job, const VolumedFile& volumes, size_t idx, const RepWriteConfig& cfg,
 	const unordered_set<OId>& rep_id_set, const std::pmr::unordered_map<OId, std::pmr::string>& oid2seqid,
 	atomic<OId>& count_all, atomic<OId>& min_all, atomic<OId>& max_all) {
@@ -92,7 +104,13 @@ static tuple<OId, uint64_t, uint64_t> write_reps(Job& job, const VolumedFile& vo
 	SimpleThreadPool pool;
 	std::thread::id writer_thread;
 	queue.reset(new Queue<RepChunk>(std::max<size_t>(16, formatter_count * 4), formatter_count, 1, RepChunk()));
+	// Declared after `pool` and therefore destructed before it: any exception thrown below releases
+	// the worker threads from the queue before the pool destructor joins them.
+	QueueAbortGuard abort_guard{ queue.get() };
 	auto writer = [&](const atomic<bool>& stop) {
+		// Releases the formatter threads that are blocked in enqueue() if this thread exits early
+		// (stop flag set or exception thrown).
+		QueueAbortGuard writer_guard{ queue.get() };
 		unordered_map<size_t, RepChunk> pending;
 		size_t next_expected = 0;
 		RepChunk chunk;
@@ -114,10 +132,21 @@ static tuple<OId, uint64_t, uint64_t> write_reps(Job& job, const VolumedFile& vo
 		};
 	writer_thread = pool.spawn(writer);
 
-	unique_ptr<SequenceFile> file(new FastaFile({ volumes[idx].path}, flags, amino_acid_traits));
 	uint64_t bytes = 0, ms = 0;
 	TaskTimer timer;
-	Block* b = file->load_seqs(INT64_MAX);
+	unique_ptr<SequenceFile> file;
+	Block* b = nullptr;
+	try {
+		file.reset(new FastaFile({ volumes[idx].path }, flags, amino_acid_traits));
+		b = file->load_seqs(INT64_MAX);
+	}
+	catch (const EmptyFileError& e) {
+		remove_tmp_file(volumes[idx].path);
+		return std::make_tuple<OId, uint64_t, uint64_t>(0, 0, 0);
+	}
+	catch (const std::exception& e) {
+		throw runtime_error("Error loading representative volume " + volumes[idx].path + "): " + e.what());
+	}
 	ms += timer.microseconds();
 	bytes += b->raw_bytes();
 	const size_t seq_count = b->seqs().size();
@@ -182,8 +211,7 @@ static tuple<OId, uint64_t, uint64_t> write_reps(Job& job, const VolumedFile& vo
 	}
 	catch (...) {
 		delete b;
-		for (int i = 0; i < formatter_count; ++i)
-			queue->close();
+		queue->abort();
 		pool.join(writer_thread);
 		throw;
 	}
@@ -206,13 +234,15 @@ static tuple<OId, uint64_t, uint64_t> write_reps(Job& job, const VolumedFile& vo
 	return std::make_tuple<OId, uint64_t, uint64_t>(count_this_volume, letters_all, bytes_all.load(std::memory_order_relaxed));
 }
 
-pair<string, uint64_t> get_reps(Job& job, const VolumedFile& volumes) {
+pair<string, uint64_t> get_reps(Job& job, const string& round_minichunks) {
 	const bool final = job.last_round();
 	const bool single_out_file = final || !ends_with(job.steps().at(job.round() + 1), "_lin");
 	if (final && config.reps_out.empty()) {
-		return { string(),0 };
+		VolumedFile volumes(round_minichunks);
+		volumes.remove(false, true, false);
+		return { string(), 0 };
 	}
-	const string base_dir = job.base_dir() + PATH_SEPARATOR + "reps" + PATH_SEPARATOR, qpath = base_dir + "queue", letters_file_path = base_dir + "letters";
+	const string base_dir = job.base_dir() + PATH_SEPARATOR + "rep_minichunks" + PATH_SEPARATOR, qpath = base_dir + "queue";
 	const string reps_list_name = base_dir + "reps.tsv";
 	job.make_temp_dir(base_dir);
 	Atomic get_reps_lock(base_dir + "get_reps_lock", job), get_reps_done(base_dir + "get_reps_done", job);
@@ -254,6 +284,7 @@ pair<string, uint64_t> get_reps(Job& job, const VolumedFile& volumes) {
 		atomic<OId> count_all(0);
 		atomic<OId> min_all(std::numeric_limits<OId>::max());
 		atomic<OId> max_all(0);
+		VolumedFile volumes(round_minichunks);
 		while (v = q.fetch_add(), v < (int64_t)volumes.size()) {
 			OId count;
 			uint64_t seq_letters, bytes_written;
@@ -263,17 +294,11 @@ pair<string, uint64_t> get_reps(Job& job, const VolumedFile& volumes) {
 			letter_count.fetch_add(seq_letters);
 			finished.fetch_add();
 		}
-		finished.await((int)volumes.size());
-		const uint64_t letters = letter_count.get();
-		ofstream letters_out(letters_file_path);
-		letters_out << letters << endl;
-		if (!letters_out)
-			throw runtime_error("Error writing file " + letters_file_path);
-		letters_out.close();
+		finished.await((int)volumes.size());		
 		if (!config.fasta_index_file.empty())
 			remove_tmp_file(config.fasta_index_file);
-		volumes.remove(job.round() > 0, false, false);
-		job.log("Representatives written: %" PRIu64 " letters: %" PRIu64, cluster_count, letters);
+		volumes.remove(false, true, false);
+		job.log("Representatives written: %" PRIu64 " letters: %" PRIu64, cluster_count, letter_count.get());
 		const int64_t t = timer.microseconds();
 		job.log("Wrote %zu bytes to disk at %.2f MB/s", bytes, (double)bytes / MEGABYTES / (t / 1e6));
 		reps_list.reset();
@@ -283,11 +308,5 @@ pair<string, uint64_t> get_reps(Job& job, const VolumedFile& volumes) {
 	else {
 		get_reps_done.await(1);
 	}
-	uint64_t letters;
-	ifstream input_letters(letters_file_path);
-	input_letters >> letters;
-	if (!input_letters)
-		throw runtime_error("Error opening file " + letters_file_path);
-	job.register_sync_file(letters_file_path);
-	return { reps_list_name, letters };
+	return { reps_list_name, letter_count.get() };
 }

@@ -23,6 +23,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <intrin.h>
 #endif
 
+// High 64 bits of the product of two 64 bit values.
+static inline uint64_t mul_hi(const uint64_t a, const uint64_t b)
+{
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+	return __umulh(a, b);
+#elif defined(__SIZEOF_INT128__)
+	return (uint64_t)(((__uint128_t)a * (__uint128_t)b) >> 64);
+#else
+	const uint64_t a0 = a & 0xffffffffull, a1 = a >> 32, b0 = b & 0xffffffffull, b1 = b >> 32;
+	const uint64_t t = a0 * b0, u = a1 * b0 + (t >> 32), v = a0 * b1 + (u & 0xffffffffull);
+	return a1 * b1 + (u >> 32) + (v >> 32);
+#endif
+}
+
 static inline unsigned popcount32(unsigned x)
 {
 #ifdef _MSC_VER

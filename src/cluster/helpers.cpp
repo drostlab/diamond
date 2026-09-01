@@ -172,20 +172,6 @@ void init_thresholds() {
 	}
 }
 
-/*vector<BlockId> len_sorted_clust(const FlatArray<Util::Algo::Edge<SuperBlockId>>& edges) {
-	static constexpr BlockId NIL = std::numeric_limits<BlockId>::max();
-	vector<BlockId> v(edges.size(), NIL);
-	for (uint64_t i = 0; i < edges.size(); ++i) {
-		if (v[i] != NIL)
-			continue;
-		v[i] = (BlockId)i;
-		for (auto it = edges.cbegin(i); it != edges.cend(i); ++it)
-			if (v[it->node2] == NIL)
-				v[it->node2] = (BlockId)i;
-	}
-	return v;
-}*/
-
 double round_value(const vector<string>& par, const string& name, int round, int round_count) {
 	if (par.empty())
 		return 0.0;
@@ -222,10 +208,6 @@ static int64_t seq_mem_use(Loc len, Loc id_len, int c, int min, int sketch_size)
 		+ 4 // unaligned 
 		, extend_stage);
 }
-
-//const int minimizer_window = Search::sensitivity_traits.at(Sensitivity::FASTER).minimizer_window,
-//sketch_size = Search::sensitivity_traits.at(Sensitivity::FASTER).sketch_size;
-//auto seq_size = function<int64_t(Loc)>(bind(seq_mem_use, std::placeholders::_1, 0, 1, minimizer_window, sketch_size));
 
 vector<string> cluster_steps(double approx_id, bool linear) {
 	if (!config.cluster_steps.empty()) {

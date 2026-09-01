@@ -24,12 +24,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 template<typename T, typename F>
 struct ReorderQueue
 {
-	ReorderQueue(size_t begin, F& f) :
+	ReorderQueue(size_t begin, F& f, bool reorder) :
+		reorder(reorder),
 		f_(f),
 		begin_(begin),
 		next_(begin),
 		size_(0),
-		max_size_(0)
+		max_size_(0)		
 	{}
 
 	size_t size() const
@@ -51,6 +52,14 @@ struct ReorderQueue
 	void push(size_t n, T value)
 	{
 		mtx_.lock();
+		if (!reorder) {
+			if (value != nullptr) {
+				f_(value);
+				delete value;
+			}
+			mtx_.unlock();
+			return;
+		}
 		//cout << "n=" << n << " next=" << next_ << endl;
 		if (n != next_) {
 			backlog_[n] = value;
@@ -64,8 +73,7 @@ struct ReorderQueue
 
 private:
 
-	void flush(T value)
-	{
+	void flush(T value) {
 		size_t n = next_ + 1;
 		std::vector<T> out;
 		out.push_back(value);
@@ -94,6 +102,7 @@ private:
 		mtx_.unlock();
 	}
 
+	const bool reorder;
 	std::mutex mtx_;
 	F& f_;
 	std::map<size_t, T> backlog_;

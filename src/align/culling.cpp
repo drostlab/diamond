@@ -89,7 +89,7 @@ void Match::max_hsp_culling() {
 	Extension::max_hsp_culling(hsp);
 }
 
-static void sort_targets(vector<Target>& targets) {
+static void sort_targets(TargetList& targets) {
 	std::sort(targets.begin(), targets.end(), config.toppercent.present() ? Target::comp_score : Target::comp_evalue);
 }
 
@@ -113,7 +113,7 @@ static It output_range(const It begin, const It end, const Search::Config& cfg) 
 	return i;
 }
 
-bool append_hits(vector<Target>& targets, vector<Target>::iterator begin, vector<Target>::iterator end, bool with_culling, const Search::Config& cfg) {
+bool append_hits(TargetList& targets, TargetList::iterator begin, TargetList::iterator end, bool with_culling, const Search::Config& cfg) {
 	if (end <= begin)
 		return false;
 	bool new_hits = config.toppercent.blank() && (int64_t)targets.size() < cfg.max_target_seqs;
@@ -128,7 +128,7 @@ bool append_hits(vector<Target>& targets, vector<Target>::iterator begin, vector
 		min_evalue = std::min(min_evalue, i->filter_evalue);
 	}
 
-	vector<Target>::const_iterator range_end = output_range(targets.begin(), targets.end(), cfg);
+	TargetList::const_iterator range_end = output_range(targets.cbegin(), targets.cend(), cfg);
 
 	if (targets.empty()
 		|| (config.toppercent.blank() && min_evalue <= (range_end - 1)->filter_evalue)
@@ -143,7 +143,8 @@ bool append_hits(vector<Target>& targets, vector<Target>::iterator begin, vector
 	return new_hits;
 }
 
-bool filter_hsp(Hsp& hsp, int source_query_len, const char *query_title, int subject_len, const char* subject_title, const Sequence& query_seq, const Sequence& subject_seq, const double query_self_aln_score, const double target_self_aln_score, const OutputFormat* output_format) {
+bool filter_hsp(Hsp& hsp, int source_query_len, const char *query_title, int subject_len, const char* subject_title, const Sequence& query_seq, const Sequence& subject_seq,
+	const double query_self_aln_score, const double target_self_aln_score, const OutputFormat* output_format) {
 	bool cluster_threshold = true;
 #ifdef WITH_MCL
 	if (config.cluster_threshold.present()) {
@@ -155,13 +156,11 @@ bool filter_hsp(Hsp& hsp, int source_query_len, const char *query_title, int sub
 	const double qcov = hsp.query_cover_percent(source_query_len),
 		tcov = hsp.subject_cover_percent(subject_len),
 		approx_min_id = config.approx_min_id.get(0.0);
-	//const bool filter_uncov = std::max(hsp.query_range.begin_, source_query_len - hsp.query_range.end_) > config.uncov_cap || std::max(hsp.subject_range.begin_, subject_len - hsp.subject_range.end_) > config.uncov_cap;
 	return !cluster_threshold
 		|| hsp.id_percent() < config.min_id
 		|| (approx_min_id > 0 && hsp.approx_id < approx_min_id)
 		|| qcov < config.query_cover
 		|| tcov < config.subject_cover
-		//|| filter_uncov
 		|| (qcov < config.query_or_target_cover && tcov < config.query_or_target_cover)
 		|| (config.no_self_hits
 			&& query_seq == subject_seq
@@ -184,7 +183,7 @@ void Match::apply_filters(const Query& query, const Block& targets, const Output
 	filter_score = hsp.empty() ? 0 : hsp.front().score;
 }
 
-void culling(std::vector<Target>& targets, bool sort_only, const Search::Config& cfg) {
+void culling(TargetList& targets, bool sort_only, const Search::Config& cfg) {
 	sort_targets(targets);
 	if (!sort_only)
 		targets.erase(output_range(targets.begin(), targets.end(), cfg), targets.end());

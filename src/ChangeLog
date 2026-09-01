@@ -1,3 +1,20 @@
+[2.2.6]
+- Improved the performance of the search and clustering workflows.
+- Improved the sensitivity of the `--very-sensitive` alignment mode.
+- Fixed potential issues of increased memory use in the clustering workflows.
+- Added the option `--linclust-minichunk` to set the minimal chunk size for linear-time clustering
+  rounds.
+- Added limited support for the AVX512 machine instructions and the respective runtime dispatch code.
+- The SSE4.1 compatible architecture code path now also requires SSE4.2, `CMPXCHG16B` and `SAHF`.
+- The AVX2 compatible architecture code path now also requires `BMI`, `BMI2`, `LZCNT`, `F16C`, `MOVBE`,
+  `AES`, `PCLMUL`, `XSAVE`, `XRSTOR` and `XSAVEOPT`.
+- Added detection of the loong64 architecture to `CMakeLists.txt`.
+- Fixed potential compiler errors on the loong64, ppc64el, s390x, ppc64 and sparc64 architectures.
+- Added the `countdistinct` workflow to count distinct sequences in a FASTA file.
+- Added the option `--no-reorder` to disable reordering of alignment output according to the order
+  of queries in the input file.
+- Added the option `--no-mempool` to disable per-thread memory pools.
+
 [2.2.5]
 - Improved the performance of the clustering workflows.
 - Linear-time stages of the clustering workflows now by default use banded instead of full-matrix

@@ -99,11 +99,8 @@ Search::SeedStats enum_seeds_minimizer(SequenceSet* seqs, F* f, unsigned begin, 
 		if (config.min_query_len > 0 && seqs->source_length(i) < config.min_query_len)
 			continue;
 		const Sequence seq = (*seqs)[i];
-        //if (align_mode.mode != AlignMode::blastn)
 		const auto l = seq.length();
 		Reduction::reduce_seq(seq, buf);
-        //else
-            //buf = seq.copy();
 		for (int shape_id = cfg.shape_begin; shape_id < cfg.shape_end; ++shape_id) {
 			const Shape& sh = shapes[shape_id];
 			if (l < sh.length_) continue;
@@ -121,7 +118,7 @@ Search::SeedStats enum_seeds_minimizer(SequenceSet* seqs, F* f, unsigned begin, 
 	return stats;
 }
 
-template<typename F, uint64_t BITS, typename Filter, bool SKIP_SEED_POSITIONS>
+template<typename F, uint64_t BITS, typename Filter, typename IteratorFilter, bool SKIP_SEED_POSITIONS>
 void enum_seeds_hashed(SequenceSet* seqs, F* f, unsigned begin, unsigned end, const Filter* filter, const EnumCfg& cfg)
 {
 	for (unsigned i = begin; i < end; ++i) {
@@ -133,9 +130,12 @@ void enum_seeds_hashed(SequenceSet* seqs, F* f, unsigned begin, unsigned end, co
 		for (int shape_id = cfg.shape_begin; shape_id < cfg.shape_end; ++shape_id) {
 			const Shape& sh = shapes[shape_id];
 			if (seq.length() < sh.length_) continue;
-			//const __m128i shape_mask = sh.long_mask_sse_;
-			HashedSeedIterator<BITS> it(seqs->ptr(i), seqs->length(i), sh);
+			HashedSeedIterator<BITS, IteratorFilter> it(seqs->ptr(i), seqs->length(i), sh);
 			while (it.good()) {
+				if (!it.valid()) {
+					++it;
+					continue;
+				}
 				const uint64_t key = *it;
 				const uint64_t pos = seqs->position(i, Loc(it.seq_ptr(sh) - seq.data()));
 				if (!skip_seed_position<SKIP_SEED_POSITIONS>(cfg, shape_id, pos) && filter->contains(key, shape_id)) {
@@ -145,6 +145,38 @@ void enum_seeds_hashed(SequenceSet* seqs, F* f, unsigned begin, unsigned end, co
 						*it.seq_ptr(sh) |= SEED_MASK;
 				}
 				++it;
+			}
+		}
+	}
+	f->finish();
+}
+
+/* Sketched variant of enum_seeds_hashed: only the n smallest seeds of a sequence are
+   emitted, the same subsampling that enum_seeds_minimizer applies to the letterwise
+   encoding. */
+template<typename F, uint64_t BITS, typename Filter, typename IteratorFilter, bool SKIP_SEED_POSITIONS>
+void enum_seeds_hashed_sketch(SequenceSet* seqs, F* f, unsigned begin, unsigned end, const Filter* filter, const EnumCfg& cfg)
+{
+	for (unsigned i = begin; i < end; ++i) {
+		if (cfg.skip && (*cfg.skip)[i / align_mode.query_contexts])
+			continue;
+		if (config.min_query_len > 0 && seqs->source_length(i) < config.min_query_len)
+			continue;
+		const Sequence seq = (*seqs)[i];
+		for (int shape_id = cfg.shape_begin; shape_id < cfg.shape_end; ++shape_id) {
+			const Shape& sh = shapes[shape_id];
+			if (seq.length() < sh.length_) continue;
+			HashedSketchIterator<BITS, IteratorFilter> it(seqs->ptr(i), seqs->length(i), sh, cfg.sketch_size);
+			for (; it.good(); ++it) {
+				const uint64_t key = *it;
+				Letter* const seed_ptr = seqs->ptr(i) + it.pos();
+				const uint64_t pos = seqs->position(i, it.pos());
+				if (!skip_seed_position<SKIP_SEED_POSITIONS>(cfg, shape_id, pos) && filter->contains(key, shape_id)) {
+					if (!cfg.filter_low_complexity_seeds || Search::seed_is_complex(seed_ptr, sh, cfg.seed_cut))
+						(*f)(key, pos, i, shape_id);
+					else if (cfg.mask_low_complexity_seeds)
+						*seed_ptr |= SEED_MASK;
+				}
 			}
 		}
 	}
@@ -219,7 +251,10 @@ static void enum_seeds_worker(F* f, SequenceSet* seqs, const unsigned begin, con
 		const uint64_t b = Reduction::get_reduction().bit_size();
 		switch (b) {
 		case 4:
-			enum_seeds_hashed<F, 4, Filter, SKIP_SEED_POSITIONS>(seqs, f, begin, end, filter, *cfg);
+			if (cfg->sketch_size > 0)
+				enum_seeds_hashed_sketch<F, 4, Filter, IteratorFilter, SKIP_SEED_POSITIONS>(seqs, f, begin, end, filter, *cfg);
+			else
+				enum_seeds_hashed<F, 4, Filter, IteratorFilter, SKIP_SEED_POSITIONS>(seqs, f, begin, end, filter, *cfg);
 			break;
 		default:
 			throw std::runtime_error("Unsupported reduction.");

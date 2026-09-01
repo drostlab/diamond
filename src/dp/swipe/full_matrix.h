@@ -57,7 +57,9 @@ struct Matrix
 		}
 		Sv *hgap_ptr_, *score_ptr_;
 	};
-	Matrix(int rows, int)
+	Matrix(int rows, int, std::pmr::memory_resource* pool = nullptr) :
+		hgap_(pool),
+		score_(pool)
 	{
 		if (rows < 0)
 			throw std::invalid_argument("Negative matrix row count.");
@@ -89,17 +91,8 @@ struct Matrix
 		return score_[i + 1];
 	}
 private:
-#if defined(__APPLE__) || !defined(USE_TLS)
 	MemBuffer<Sv> hgap_, score_;
-#else
-	static thread_local MemBuffer<Sv> hgap_, score_;
-#endif
 };
-
-#if !defined(__APPLE__) && defined(USE_TLS)
-template<typename Sv> thread_local MemBuffer<Sv> Matrix<Sv>::hgap_;
-template<typename Sv> thread_local MemBuffer<Sv> Matrix<Sv>::score_;
-#endif
 
 template<typename Sv>
 struct TracebackVectorMatrix
@@ -210,7 +203,10 @@ struct TracebackVectorMatrix
 		return TracebackIterator(&trace_mask_[col*rows_ + i], trace_mask_.begin(), trace_mask_.end(), rows_, i, j, channel);
 	}
 
-	TracebackVectorMatrix(int rows, int cols) :
+	TracebackVectorMatrix(int rows, int cols, std::pmr::memory_resource* pool = nullptr) :
+		hgap_(pool),
+		score_(pool),
+		trace_mask_(pool),
 		rows_(rows),
 		cols_(cols)
 	{
@@ -227,7 +223,7 @@ struct TracebackVectorMatrix
 
 	inline ColumnIterator begin(int col)
 	{
-		return ColumnIterator(hgap_.begin(), score_.begin(), &trace_mask_[col*rows_]);
+		return ColumnIterator(hgap_.begin(), score_.begin(), &trace_mask_[col * rows_]);
 	}
 
 	void set_zero(int c)
@@ -248,20 +244,11 @@ struct TracebackVectorMatrix
 		return Sv();
 	}
 
-#if defined(__APPLE__) || !defined(USE_TLS)
 	MemBuffer<Sv> hgap_, score_;
-#else
-	static thread_local MemBuffer<Sv> hgap_, score_;
-#endif
 	MemBuffer<TraceMask> trace_mask_;
 private:
 	int rows_, cols_;
 };
-
-#if !defined(__APPLE__) && defined(USE_TLS)
-template<typename Sv> thread_local MemBuffer<Sv> TracebackVectorMatrix<Sv>::hgap_;
-template<typename Sv> thread_local MemBuffer<Sv> TracebackVectorMatrix<Sv>::score_;
-#endif
 
 template<typename Sv, bool Traceback>
 struct SelectMatrix {

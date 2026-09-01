@@ -78,13 +78,20 @@ struct FormatDetectionError : public std::runtime_error {
 	}
 };
 
+struct EmptyFileError : public FormatDetectionError {
+	EmptyFileError(const std::string& message) :
+		FormatDetectionError(message)
+	{
+	}
+};
+
 int frame_mask();
 
 struct SequenceFile {
 
 	static const uint64_t DEFAULT_LOAD_SIZE;
 
-    enum class Type { DMND = 0, BLAST = 1, FASTA = 2, BLOCK = 3 };
+    enum class Type { DMND = 0, BLAST = 1, FASTA = 2, BLOCK = 3, VOLUMED = 4 };
 
 	enum class Flags : int {
 		NONE = 0,
@@ -190,19 +197,18 @@ struct SequenceFile {
 	Type type() const { return type_; }
     Block* load_seqs(const int64_t max_letters, OId max_seqs = 0, const BitVector* filter = nullptr, const Chunk& chunk = Chunk());
 	void get_seq();
-	//Util::Tsv::File* make_seqid_list();
 	optional<uint64_t> total_blocks() const;
 	std::pair<std::vector<OId>, std::vector<uint64_t>> partition(uint64_t max_block_size, uint64_t start_size = 0) const;
 	SequenceSet seqs_by_accession(const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end);
 	std::vector<Letter> seq_by_accession(const std::string& acc);
 	DbFilter* filter_by_taxonomy(std::istream& filter, char delimiter, bool exclude);
-	//void write_accession_list(const std::vector<bool>& oids, std::string& file_name);
 	template<typename It>
 	std::vector<int64_t> seq_offsets(It begin, It end);
 	static void init_taxon_output_fields();
     virtual RawChunk* raw_chunk(size_t letters, Flags flags);
 	virtual void add_taxid_mapping(const std::vector<std::pair<OId, TaxId>>& taxids);
 	virtual int raw_chunk_no() const;
+	virtual void advance_seq_count(OId n);
 	uint64_t disk_size() const;
 
 	void init_dict(const size_t query_block, const size_t target_block);

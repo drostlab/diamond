@@ -24,8 +24,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using std::array;
 
 namespace Search { namespace DISPATCH_ARCH {
-	
-static void all_vs_all_mutual_cov(const PackedLocId* q, const PackedLocId* s, const array<char, 48>* __restrict a, uint32_t na, const array<char, 48>* __restrict b, uint32_t nb, HitField& out, unsigned hamming_filter_id, WorkSet& work_set) {
+
+static void all_vs_all_mutual_cov(const PackedLocId* q, const PackedLocId* s, const array<char, 48>* __restrict a, uint32_t na, const array<char, 48>* __restrict b,
+	uint32_t nb, HitField& out, unsigned hamming_filter_id, WorkSet& work_set) {
 	uint32_t j0 = 0, j1 = 0;
 	const double mlr = work_set.cfg.min_length_ratio;
 	for (uint32_t i = 0; i < na; ++i) {

@@ -165,10 +165,7 @@ static inline std::pair<typename DISPATCH_ARCH::ScoreTraits<Sv>::Score, int> max
 template<typename _t, typename _p, int DELTA>
 static inline void store_sv(const DISPATCH_ARCH::ScoreVector<_t, DELTA> &sv, _p *dst)
 {
-#if ARCH_ID == 3
-	//_mm512_storeu_si512((__m512i*)dst, sv.data_);
-	sv.store(dst);
-#elif ARCH_ID == 2
+#if ARCH_AVX2_KERNELS
 	_mm256_storeu_si256((__m256i*)dst, sv.data_);
 #else
 	_mm_storeu_si128((__m128i*)dst, sv.data_);

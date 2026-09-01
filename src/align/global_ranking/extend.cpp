@@ -107,7 +107,7 @@ void extend(SequenceFile& db, File& merged_query_list, BitVector& ranking_db_fil
 
 	timer.go("Computing alignments");
 	OutputWriter writer{ &master_out };
-	output_sink.reset(new ReorderQueue<TextBuffer*, OutputWriter>(0, writer));
+	output_sink.reset(new ReorderQueue<TextBuffer*, OutputWriter>(0, writer, !config.no_reorder));
 	uint32_t next_query = 0;
 	SimpleThreadPool pool;
 	for (size_t i = 0; i < (config.threads_align ? config.threads_align : config.threads_); ++i)
@@ -206,7 +206,7 @@ void extend(Search::Config& cfg, File& out) {
 
 	timer.go("Computing alignments");
 	OutputWriter writer{ &out };
-	output_sink.reset(new ReorderQueue<TextBuffer*, OutputWriter>(0, writer));
+	output_sink.reset(new ReorderQueue<TextBuffer*, OutputWriter>(0, writer, !config.no_reorder));
 
 	std::atomic<BlockId> next_query(0);
 	const BlockId query_count = cfg.query->seqs().size() / align_mode.query_contexts;

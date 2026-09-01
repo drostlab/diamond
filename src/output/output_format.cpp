@@ -118,7 +118,10 @@ void IntermediateRecord::write(TextBuffer& buf, const Hsp& match, unsigned query
 	buf.write_packed(oriented_range.begin_);
 	buf.write_varint(oriented_range.end_);
 	buf.write_packed(match.subject_range.begin_);
-	if (match.seed_only) { 		buf.write_varint(match.subject_range.end_); 		return; 	}
+	if (match.seed_only) {
+		buf.write_varint(match.subject_range.end_);
+		return;
+	}
 
 	if (flag_any(output_format->hsp_values, HspValues::TRANSCRIPT))
 		buf << match.transcript.data();
@@ -195,7 +198,7 @@ OutputFormat* get_output_format()
 	else if (f[0] == "0")
 		return new PairwiseFormat;
 	else if (f[0] == "null")
-		return new Null_format;
+		return new NullFormat;
 	else if (f[0] == "102")
 		return new TaxonFormat;
 	else if (f[0] == "paf" || f[0] == "103")

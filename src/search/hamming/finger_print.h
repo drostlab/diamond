@@ -28,9 +28,10 @@ using std::array;
 
 namespace DISPATCH_ARCH {
 
-#ifdef __AVX512BW__
+#if defined(__AVX512BW__) && defined(WITH_AVX512_WIDE)
 
 struct FingerPrint {
+
     alignas(64) __m512i v;
     static constexpr __mmask64 K48 = (1ULL << 48) - 1;
 
@@ -42,21 +43,26 @@ struct FingerPrint {
 #ifdef SEQ_MASK
         __m512i x = _mm512_maskz_loadu_epi8(K48, static_cast<const void*>(q - 16));
 		x = _mm512_and_si512(x, _mm512_set1_epi8(LETTER_MASK));
-        _mm512_mask_storeu_epi8(dst->data(), K48, x);
+		/* Split into a 32 and a 16 byte store rather than one masked 64 byte store:
+		   masked stores do not participate in store-to-load forwarding, and every
+		   fingerprint written here is read straight back by the constructor above. */
+		_mm256_storeu_si256((__m256i*)dst->data(), _mm512_castsi512_si256(x));
+		_mm_storeu_si128((__m128i*)(dst->data() + 32), _mm512_extracti64x2_epi64(x, 2));
 #else
         std::copy(q - 16, q + 32, dst->begin());
 #endif
     }
 
     unsigned match(const FingerPrint& rhs) const noexcept {
-        __mmask64 m = _mm512_cmpeq_epi8_mask(v, rhs.v) & K48;
-		return popcount64(static_cast<unsigned long long>(m));
+        return popcount64(static_cast<unsigned long long>(_mm512_mask_cmpeq_epi8_mask(K48, v, rhs.v)));
     }
+
 };
 
 #elif defined(__AVX2__)
 
 struct FingerPrint {
+
 	alignas(32) __m256i v0;
 	alignas(16) __m128i v1;
 
@@ -102,8 +108,8 @@ struct FingerPrint
 
 	explicit FingerPrint(const std::array<char, 48>& a) noexcept :
 		r1(_mm_load_si128((const __m128i*)a.data())),
-		r2(_mm_load_si128((const __m128i*)(a.data()+16))),
-		r3(_mm_load_si128((const __m128i*)(a.data()+32)))
+		r2(_mm_load_si128((const __m128i*)(a.data() + 16))),
+		r3(_mm_load_si128((const __m128i*)(a.data() + 32)))
 	{
 	}
 
@@ -179,25 +185,26 @@ struct FingerPrint
 
 struct FingerPrint
 {
-	FingerPrint()
-	{
+	explicit FingerPrint(const std::array<char, 48>& a) noexcept {
+		memcpy(r, a.data(), 48);
 	}
-	FingerPrint(const Letter* q) noexcept
-	{
-		memcpy(r, q - 16, 48);
+
+	static void load(const Letter* q, std::array<char, 48>* dst) noexcept {
+		memcpy(dst->data(), q - 16, 48);
 #ifdef SEQ_MASK
 		for (int i = 0; i < 48; ++i)
-			r[i] &= LETTER_MASK;
+			(*dst)[i] &= LETTER_MASK;
 #endif
 	}
-	unsigned match(const FingerPrint& rhs) const noexcept
-	{
+
+	unsigned match(const FingerPrint& rhs) const noexcept {
 		unsigned n = 0;
 		for (unsigned i = 0; i < 48; ++i)
 			if (r[i] == rhs.r[i])
 				++n;
 		return n;
 	}
+
 	Letter r[48];
 };
 

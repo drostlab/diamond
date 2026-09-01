@@ -27,7 +27,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "basic/match.h"
 #include "dp/flags.h"
 #include "output/output_format.h"
-#include "multinode.h"
 
 class ClusteringAlgorithm {
 public:
@@ -51,19 +50,12 @@ template<typename Int>
 std::vector<Int> read(const std::string& file_name, const SequenceFile& db);
 template<typename Int>
 std::vector<Int> member2centroid_mapping(const FlatArray<Int>& clusters, const std::vector<Int>& centroids);
-//template<typename Int>
-//void output_mem(Util::Tsv::File& out, SequenceFile& db, const std::vector<Int>& mapping);
-//void output_mem(Util::Tsv::File& out, SequenceFile& db, Util::Tsv::File& oid_to_centroid_oid);
-//template<typename Int>
-//void output_mem(Util::Tsv::File& out, SequenceFile& db, std::vector<std::pair<Int, Int>>& mapping);
 template<typename Int>
 std::pair<FlatArray<Int>, std::vector<Int>> cluster_sorted(const std::vector<Int>& mapping);
 template<typename Int>
 std::pair<std::vector<Int>, std::vector<Int>> split(const std::vector<Int>& mapping);
 std::vector<SuperBlockId> member_counts(const std::vector<SuperBlockId>& mapping);
 void init_thresholds();
-//std::vector<BlockId> len_sorted_clust(const FlatArray<Util::Algo::Edge<SuperBlockId>>& edges);
-//void output_edges(const std::string& file, SequenceFile& db, const std::vector<Util::Algo::Edge<SuperBlockId>>& edges);
 double round_value(const std::vector<std::string>& par, const std::string& name, int round, int round_count);
 
 template<typename Int, typename Int2>
@@ -73,34 +65,6 @@ std::vector<Int2> convert_mapping(const std::vector<Int>& mapping, Int2) {
 	std::transform(mapping.begin(), mapping.end(), std::back_inserter(out), [](Int x) { return (Int2)x; });
 	return out;
 }
-
-/*struct Mapback : public Consumer {
-	static constexpr OId NIL_VALUE = (OId)-1;
-	Mapback(int64_t count) :
-		centroid_id(count, NIL_VALUE)
-	{}
-	virtual void consume(const char* ptr, size_t n) {
-		const char* end = ptr + n;
-		const bool mutual_cov = config.mutual_cover.present();
-		const double cutoff = mutual_cov ? config.mutual_cover.get_present() : config.member_cover;
-		OId query = NIL_VALUE;
-		for(const char* p = ptr; p < end; p += sizeof(Output::Format::Edge::Data)) {
-			const auto edge = *(Output::Format::Edge::Data*)p;
-			assert(query == NIL_VALUE || query == edge.query);
-			query = edge.query;
-			if (edge.qcovhsp >= cutoff && ((mutual_cov && edge.scovhsp >= cutoff) || !mutual_cov))
-				centroid_id[edge.query] = edge.target;
-		}
-	}
-	std::vector<OId> unmapped() const {
-		std::vector<OId> v;
-		for (OId i = 0; i < centroid_id.size(); ++i)
-			if (centroid_id[i] == NIL_VALUE)
-				v.push_back(i);
-		return v;
-	}
-	std::vector<OId> centroid_id;
-};*/
 
 template<typename It, typename It2>
 int64_t update_clustering(It clustering, It2 mapping, It2 query_begin, It2 query_end, It2 db_begin) {
